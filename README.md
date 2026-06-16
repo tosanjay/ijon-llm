@@ -132,7 +132,7 @@ Model defaults to `deepseek/deepseek-v4-pro`; override with `--model` or `IJON_L
 
 ## Acknowledgments & provenance
 
-This repository is a fork of
+This repository is derived from
 [RUB-SysSec/ijon](https://github.com/RUB-SysSec/ijon), the reference implementation
 of **IJON** (Cornelius Aschermann, Sergej Schumilo, Ali Abbasi, Thorsten Holz —
 *IJON: Exploring Deep State Spaces via Fuzzing*,
