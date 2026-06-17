@@ -162,7 +162,45 @@ LLM. It **builds directly on the IJON technique** and would not exist without it
   `docs/architecture-design.md` and `docs/writeup/`, and this README.
 
 Also built on [fuzz-introspector](https://github.com/ossf/fuzz-introspector) and
-[libtpms](https://github.com/stefanberger/libtpms). **If you use this work, please
-cite the original IJON paper.**
+[libtpms](https://github.com/stefanberger/libtpms).
+
+## Citation
+
+If you use this work, please **cite this repository** (below). Because it builds
+directly on IJON, please **also cite the original IJON paper**.
+
+**This repository** — BibTeX:
+
+```bibtex
+@software{rawat2026ijonreloaded,
+  author = {Rawat, Sanjay},
+  title  = {{IJON Reloaded}: Using an {LLM} as the {IJON} Fuzzing Analyst},
+  year   = {2026},
+  url    = {https://github.com/tosanjay/ijon-llm},
+  note   = {Automates the IJON analyst role with an LLM; builds on IJON
+            (Aschermann et al., IEEE S\&P 2020)}
+}
+```
+
+ACM Reference Format:
+
+> Sanjay Rawat. 2026. IJON Reloaded: Using an LLM as the IJON Fuzzing Analyst. Retrieved June 17, 2026 from https://github.com/tosanjay/ijon-llm
+
+**The IJON paper it builds on** — BibTeX:
+
+```bibtex
+@inproceedings{aschermann2020ijon,
+  author    = {Aschermann, Cornelius and Schumilo, Sergej and Abbasi, Ali and Holz, Thorsten},
+  title     = {{IJON}: Exploring Deep State Spaces via Fuzzing},
+  booktitle = {2020 IEEE Symposium on Security and Privacy (SP)},
+  year      = {2020},
+  pages     = {1597--1612},
+  doi       = {10.1109/SP40000.2020.00117}
+}
+```
+
+ACM Reference Format:
+
+> Cornelius Aschermann, Sergej Schumilo, Ali Abbasi, and Thorsten Holz. 2020. IJON: Exploring Deep State Spaces via Fuzzing. In 2020 IEEE Symposium on Security and Privacy (SP). IEEE, 1597–1612. https://doi.org/10.1109/SP40000.2020.00117
 
 — *Sanjay Rawat*
