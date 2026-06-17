@@ -41,8 +41,16 @@ re-derives a working annotation by reasoning.
 | **maxclimb** | known relevant state values · `IJON_MAX` | plain: 0 crashes / 16.8M execs → solved |
 | **libpng** (real lib) | known state changes · `IJON_STATE` | **41×** more distinct chunk-type *sequences* explored than plain AFL (over wall-clock) |
 | **libpng — autonomy** | known state changes · `IJON_STATE` | the loop, rewarded on state-diversity, **autonomously reaches** `IJON_STATE(hash(mode,chunk_name))` — **30.9×** |
-| **Super Mario** | known relevant state values · `IJON_MAX` | reproduces `IJON_MAX(world_pos)` blind & plays the level (effectiveness A/B is an honest tie — see below) |
-| **libtpms (vTPM)** | known state changes · `IJON_STATE` | 12 h real-target deployment, two autonomous annotations → **11.5×** more command sequences than plain |
+| **Super Mario** *(demo)* | known relevant state values · `IJON_MAX` | blind, reproduces the paper's flagship `IJON_MAX(world_pos)`; that annotation drives a real playthrough (GIF above) — shown as a demo, not an effectiveness benchmark |
+| **libtpms (vTPM)** | known state changes · `IJON_STATE` | 12 h real-target deployment, two autonomous annotations → **11.5×*** more command sequences than plain |
+
+<sub>\* **A conservative number with known headroom.** The class-3 annotation
+landed semantically in the library (`IJON_SET(command.index)` in `ExecCommand.c`),
+but the class-2 *sequence* annotation fell back to a raw-byte prefix hash in the
+harness rather than the command-index sequence at the library's dispatch loop —
+because v1's localizer is coverage-*frontier* oriented and has no class-2
+loop-localization yet (see the [v2.0 roadmap](docs/architecture-design.md#roadmap--what-v20-will-add)).
+A sharper, semantic class-2 site should only raise this gap.</sub>
 
 Reproducible records for the newer experiments live in
 [`experiments/`](experiments/); design rationale and dead-ends in
@@ -50,14 +58,16 @@ Reproducible records for the newer experiments live in
 
 ### The unifying finding
 
-**IJON helps ⟺ the relevant state is *invisible* to edge coverage.** Where state
-is genuinely hidden — chunk *sequences*, a maximization score, command *orderings*
-— the agent's annotation wins, and the win *compounds* with time (on libtpms the
-gap grew from 6× to 11.5× as plain AFL flat-lined). Where state *leaks into*
-coverage — Super Mario's `world_pos` (each new screen runs new code) — plain AFL
-already has the gradient and the annotation is redundant (hence the honest Mario
-tie). So the analyst's real skill isn't picking the primitive; it's choosing a
-state edge-coverage doesn't already capture — which the loop learns to do.
+**IJON helps when the relevant state is *invisible* to edge coverage** — and the
+gain scales with *how* invisible it is. Where state is genuinely hidden — chunk
+*sequences*, a maximization score, command *orderings* — the agent's annotation
+wins, and the win *compounds* with time (on libtpms the gap grew from 6× to 11.5×
+as plain AFL flat-lined). The two real targets even trace the gradient: libpng's
+chunk sequences run on shared code (nearly invisible → **41×**), while libtpms's
+command *type* partly leaks into coverage via per-command handlers (partly visible
+→ **11.5×**). So the analyst's real skill isn't picking the primitive; it's
+choosing a state edge-coverage doesn't already capture — which the loop learns to
+do.
 
 ## How it works
 
@@ -85,7 +95,7 @@ fuzz → plateau → [localize] → [LLM: diagnose + annotate] → patch+rebuild
 harness/        deterministic harness + the LLM analyst (stdlib + LiteLLM)
   config.py · fuzzer.py · plateau.py · build.py · model.py · agent.py · loop.py · coverage.py · localize.py
 scripts/        reproduce_m1, solve_target_llm, autonomous, annotation_comparison,
-                libpng_{loop,convergence,autonomy}, mario_{annotation,convergence,video}
+                libpng_{loop,convergence,autonomy}, mario_{annotation,video}
 experiments/    reproducible records: human_vs_llm, libpng_convergence, libpng_autonomy, mario, libtpms
 workspace/<t>/  per-target: src/ (canonical source), seeds, build.sh
 docs/           architecture-design.md + the HTML write-up (writeup/)
@@ -120,8 +130,6 @@ Model defaults to `deepseek/deepseek-v4-pro`; override with `--model` or `IJON_L
 
 ## Honest negatives (reported, not hidden)
 
-- **Super Mario** — annotation reproduced, but no *effectiveness* gain: position
-  leaks into coverage, so a modern AFL++ already plays the level.
 - **libpng bug-hunt** — clean miss; recent libpng CVEs are *format-gated*, not
   CRC-gated (coverage data refuted our CRC hypothesis).
 - **libtpms** — 12 h, 0 crashes (no new bug on an OSS-Fuzz-hardened target); the

@@ -490,7 +490,11 @@ handlers commonly call; slice those ~10 functions into the prompt. Plus the full
 autonomous loop, the 3-class diagnosis, source-coverage keep/revert, and the
 evaluation in `experiments/`.
 
-**v2.0 (planned) — branch-level localization.** The v1 frontier is function-level:
+**v2.0 (planned) — two deeper localization axes.** v1's localizer is *function-
+frontier* oriented (find uncovered code to **reach** — a class-3 bias). Two axes
+extend it; we wanted (b) in v1.0 but deferred it to ship v1 first.
+
+**(a) Branch-level localization (dataflow to a gating branch).** The v1 frontier is function-level:
 it finds the *missing edge* A→B but not *why* it's missing. When the blocking
 decision lives inside a **covered** intermediate function — A does
 `X(); Y(); if (Z()==ok) B();` and the blocker is the value computed in X/Y/Z — v1
@@ -508,9 +512,29 @@ inside the covered function didn't, and what value gated it*:
    inside Y, then took the else-branch" — the strongest fork signal, most
    instrumentation.
 
-This is the highest-value localization upgrade for hard real targets, where the
-blocker is realistically 2–3 covered functions deep. Deferred deliberately so v1
-ships first (user discussion, 2026-06).
+**(b) Class-2 loop / state-site localization.** v1's frontier finds *uncovered*
+code to reach — perfect for class-3 (breadth: expose which handler ran). But
+class-2 (depth: explore the *orderings* of operations) lives in **covered** code —
+the input-processing / dispatch **loop** where state accumulates across iterations.
+A frontier localizer by definition never surfaces it (it's already covered), so
+the class-2 annotation falls back to the nearest *visible* covered loop — often the
+**harness**, where only raw input bytes are in scope. On libtpms this is exactly
+what happened: the class-3 annotation landed in the library
+(`IJON_SET(command.index)` in `ExecCommand.c`, found by the FI+cov frontier), but
+the class-2 *sequence* annotation went into the harness loop as a raw-byte prefix
+hash (`IJON_STATE(ijon_hashmem(0, data, off))`) instead of the semantic command-
+index sequence at the library's dispatch loop. v2 adds an automated **class-2
+localizer**: find covered loops where a sequence/transition state accumulates,
+identify the in-scope state variable carried across iterations (e.g.
+`command->index` per dispatch), and place the sequence annotation at that semantic
+library site — not the harness. (Pairs naturally with relaxing v1's single-
+statement / existing-variables-only annotation to allow a small accumulator, the
+move the human's `command_state` scaffolding makes.)
+
+Axis (a) is the highest-value upgrade for hard real targets where the blocker is
+2–3 covered functions deep; axis (b) is what would have sharpened libtpms's class-2
+annotation in this release. Both deferred deliberately so v1 ships first (user
+discussion, 2026-06).
 
 ## 10. Reproduction
 
