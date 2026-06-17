@@ -174,7 +174,7 @@ directly on IJON, please **also cite the original IJON paper**.
 ```bibtex
 @software{rawat2026ijonreloaded,
   author = {Rawat, Sanjay},
-  title  = {{IJON Reloaded}: Using an {LLM} as the {IJON} Fuzzing Analyst},
+  title  = {{IJON Reloaded}: Using an {LLM} to Usher Fuzzers Through the Maze},
   year   = {2026},
   url    = {https://github.com/tosanjay/ijon-llm},
   note   = {Automates the IJON analyst role with an LLM; builds on IJON
@@ -184,7 +184,7 @@ directly on IJON, please **also cite the original IJON paper**.
 
 ACM Reference Format:
 
-> Sanjay Rawat. 2026. IJON Reloaded: Using an LLM as the IJON Fuzzing Analyst. Retrieved June 17, 2026 from https://github.com/tosanjay/ijon-llm
+> Sanjay Rawat. 2026. IJON Reloaded: Using an LLM to Usher Fuzzers Through the Maze. Retrieved June 17, 2026 from https://github.com/tosanjay/ijon-llm
 
 **The IJON paper it builds on** — BibTeX:
 
