@@ -140,25 +140,28 @@ Model defaults to `deepseek/deepseek-v4-pro`; override with `--model` or `IJON_L
 
 ## Acknowledgments & provenance
 
-This repository is derived from
-[RUB-SysSec/ijon](https://github.com/RUB-SysSec/ijon), the reference implementation
-of **IJON** (Cornelius Aschermann, Sergej Schumilo, Ali Abbasi, Thorsten Holz —
-*IJON: Exploring Deep State Spaces via Fuzzing*,
-[IEEE S&P 2020](https://nyx-fuzz.com/papers/ijon.pdf)). This project automates
-IJON's human-analyst role with an LLM; it **builds directly on the IJON technique
-and codebase** and would not exist without it.
+This project automates the analyst role of **IJON** (Cornelius Aschermann, Sergej
+Schumilo, Ali Abbasi, Thorsten Holz — *IJON: Exploring Deep State Spaces via
+Fuzzing*, [IEEE S&P 2020](https://nyx-fuzz.com/papers/ijon.pdf); reference
+implementation: [RUB-SysSec/ijon](https://github.com/RUB-SysSec/ijon)) with an
+LLM. It **builds directly on the IJON technique** and would not exist without it.
 
-- **Inherited from upstream IJON / AFL, unmodified here:** the original AFL/IJON
-  sources at the repo root (`afl-fuzz.c`, `llvm_mode/`, `qemu_mode/`,
-  `test/ijon-maze.c`, …) — © Google Inc. and the IJON authors, Apache-2.0 (see
-  per-file headers / [`LICENSE`](LICENSE)). The agent doesn't modify these; at
-  runtime it builds targets against AFL++'s IJON support.
+- **The fuzzing engine is external [AFL++](https://github.com/AFLplusplus/AFLplusplus)**,
+  which has upstreamed IJON's annotation macros + runtime (`afl-ijon-min.h`, the
+  IJON instrumentation pass, `AFL_LLVM_IJON`). We do **not** vendor any AFL/IJON
+  engine source — the agent writes annotations and builds targets against your
+  AFL++ install at `$AFL_ROOT`. (Earlier revisions carried the original IJON
+  AFL-2.x tree from the fork; it was unused at runtime and has been removed.)
+- **IJON-derived benchmark targets we reuse, with credit:** the maze
+  (`workspace/maze/`) and Super Mario (`workspace/mario/`) are ported from the
+  authors' [RUB-SysSec/ijon-data](https://github.com/RUB-SysSec/ijon-data) — ©
+  the IJON authors, Apache-2.0 (see file headers + [`LICENSE`](LICENSE) and the
+  per-target `experiments/*/REPORT.md`).
 - **Original to this project (the LLM-analyst agent):** `harness/`, `scripts/`,
-  `experiments/`, `workspace/<target>/{src,seeds,build.sh}`, `tests/`,
+  `experiments/`, the harnesses in `workspace/<target>/src`, `tests/`,
   `docs/architecture-design.md` and `docs/writeup/`, and this README.
 
-Also built on [AFL++](https://github.com/AFLplusplus/AFLplusplus),
-[fuzz-introspector](https://github.com/ossf/fuzz-introspector), and
+Also built on [fuzz-introspector](https://github.com/ossf/fuzz-introspector) and
 [libtpms](https://github.com/stefanberger/libtpms). **If you use this work, please
 cite the original IJON paper.**
 

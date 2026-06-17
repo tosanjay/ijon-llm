@@ -354,8 +354,8 @@ library. (Raw IJON edges inflate too, so the honest metric is the source-level
 sequence count from the corpus, not `edges_found`.) So class 2 is evidenced both
 ways: the agent diagnoses it + emits the right primitive (protostate), and the
 state-change-log delivers a large real-target sequence-diversity gain (libpng).
-The maze (`test/ijon-maze.c`) remains the standing proof that exposing state also
-yields a full crash solve when the state space is navigable.
+The maze (`workspace/maze/src/ijon-maze.c`) remains the standing proof that
+exposing state also yields a full crash solve when the state space is navigable.
 
 ## 7b. Real-world bug hunt on libpng — honest negative (revisit this)
 
