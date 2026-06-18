@@ -1,0 +1,18 @@
+{
+  "name": "libarchive",
+  "source_name": "libarchive read path (multi-format entry loop)",
+  "harness": "src/archive_fuzzer.c",
+  "focus": ["src/archive_fuzzer.c"],
+  "seeds": "in",
+  "reward": "diversity",
+  "describe": "targets/archive_describe",
+  "build": {
+    "plain":    ["bash", "build.sh", "plain"],
+    "describe": ["bash", "build.sh", "describe"],
+    "agent":    ["bash", "build.sh", "agent"]
+  },
+  "targets": {
+    "plain": "targets/archive_plain",
+    "agent": "targets/archive_agent"
+  }
+}

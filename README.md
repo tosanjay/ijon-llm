@@ -43,6 +43,7 @@ re-derives a working annotation by reasoning.
 | **libpng — autonomy** | known state changes · `IJON_STATE` | the loop, rewarded on state-diversity, **autonomously reaches** `IJON_STATE(hash(mode,chunk_name))` — **30.9×** |
 | **Super Mario** *(demo)* | known relevant state values · `IJON_MAX` | blind, reproduces the paper's flagship `IJON_MAX(world_pos)`; that annotation drives a real playthrough (GIF above) — shown as a demo, not an effectiveness benchmark |
 | **libtpms (vTPM)** | known state changes · `IJON_STATE` | 12 h real-target deployment, two autonomous annotations → **11.5×*** more command sequences than plain |
+| **libarchive** (real lib) | known state changes · `IJON_STATE` | the [getting-started](docs/getting_started.md) target: agent blind-diagnoses class 2 and re-derives the entry-type state annotation; reference A/B → **up to 233×** more distinct format/entry *sequences* (budget-dependent) |
 
 <sub>\* **A conservative number with known headroom.** The class-3 annotation
 landed semantically in the library (`IJON_SET(command.index)` in `ExecCommand.c`),
@@ -94,11 +95,11 @@ fuzz → plateau → [localize] → [LLM: diagnose + annotate] → patch+rebuild
 ```
 harness/        deterministic harness + the LLM analyst (stdlib + LiteLLM)
   config.py · fuzzer.py · plateau.py · build.py · model.py · agent.py · loop.py · coverage.py · localize.py
-scripts/        reproduce_m1, solve_target_llm, autonomous, annotation_comparison,
-                libpng_{loop,convergence,autonomy}, mario_{annotation,video}
-experiments/    reproducible records: human_vs_llm, libpng_convergence, libpng_autonomy, mario, libtpms
-workspace/<t>/  per-target: src/ (canonical source), seeds, build.sh
-docs/           architecture-design.md + the HTML write-up (writeup/)
+scripts/        reproduce_m1, solve_target_llm, autonomous, run_target (generic real-lib loop),
+                annotation_comparison, libpng_{loop,convergence,autonomy}, mario_{annotation,video}
+experiments/    reproducible records: human_vs_llm, libpng_convergence, libpng_autonomy, mario, libtpms, libarchive
+workspace/<t>/  per-target: src/ (canonical harness), seeds, build.sh, target.json (real libs)
+docs/           getting_started.md + architecture-design.md + the HTML write-up (writeup/)
 tests/          unittest suite for the deterministic logic
 ```
 
@@ -118,6 +119,9 @@ export TMPDIR=/path/with/space                # scratch for builds/corpora (opti
 
 ## Run
 
+**The bundled benchmarks** — self-contained single-file targets (compiled with
+`-fsanitize=fuzzer`); the turnkey path:
+
 ```bash
 .venv/bin/python scripts/reproduce_m1.py                                   # deterministic A/B (no LLM)
 .venv/bin/python scripts/solve_target_llm.py --workspace workspace/checksum --src checksum-guard.c
@@ -127,6 +131,25 @@ export TMPDIR=/path/with/space                # scratch for builds/corpora (opti
 ```
 
 Model defaults to `deepseek/deepseek-v4-pro`; override with `--model` or `IJON_LLM_MODEL`.
+
+### Run on your own library
+
+Real libraries (you cloned `libxyz` — now what?) need a harness that links the
+library, a `build.sh`, and a class-matched reward. The generic runner
+[`scripts/run_target.py`](scripts/run_target.py) then drives the full loop from a
+small per-workspace manifest:
+
+```bash
+.venv/bin/python scripts/run_target.py --workspace workspace/libarchive --iters 3
+```
+
+📘 **[`docs/getting_started.md`](docs/getting_started.md)** is the concrete,
+command-by-command walkthrough that builds **libarchive** from a bare clone to a
+finished round (harness → `build.sh` → seeds → reward → deterministic A/B → the
+autonomous loop), with the real transcripts. Use it as the template for `libxyz`.
+The two jobs that are inherently per-library — writing the harness and the
+`build.sh` — have worked templates in [`workspace/libarchive/`](workspace/libarchive);
+the diagnose/annotate/keep-revert loop is the reusable part.
 
 ## Honest negatives (reported, not hidden)
 

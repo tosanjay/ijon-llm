@@ -1,0 +1,22 @@
+{
+  "target": "libarchive 3.8.6 (read path, all formats + filters)",
+  "harness": "workspace/libarchive/src/archive_fuzzer.c",
+  "metric": "distinct format/entry-type state sequences (class 2), via targets/archive_describe",
+  "reference_annotation": "IJON_STATE(hash(filter_code, format, entry_filetype)) per decoded header",
+  "ab_deterministic": {
+    "note": "plain control vs reference IJON annotation, 120s/arm, 4 seeds, single core",
+    "plain": {"corpus": 975, "distinct_sequences": 43},
+    "ijon":  {"corpus": 10667, "distinct_sequences": 10033},
+    "ratio": 233.3,
+    "honest_scope": "magnitude is budget-dependent and amplified by IJON corpus retention (every new state sequence is saved as 'new coverage'); the durable point is the mechanism: plain AFL structurally discards state-equivalent inputs, IJON retains and keeps mutating them"
+  },
+  "autonomous_loop": {
+    "note": "scripts/run_target.py, blind (fairness-stripped 54-line harness), plateau 75s, eval 90s/iter, deepseek-v4-pro",
+    "plain_plateau": {"corpus": 1074, "distinct_sequences": 45, "edges": 1623},
+    "diagnosis": "known_state_changes (class 2) — 'edge coverage sees the same loop code for each header; no gradient'",
+    "iter1": {"annotation": "IJON_STATE(archive_entry_filetype(entry));", "sequences": 160, "ratio_in_window": 3.6, "verdict": "KEEP"},
+    "iter2": {"annotation": "{ static int seq=0; seq=ijon_hashint(seq, archive_entry_filetype(entry)); IJON_STATE(seq); }", "sequences": 106, "verdict": "revert", "why": "richer sequence/history idiom, but did not beat iter1 in the 90s window — coverage-blind reward correctly did not credit it"},
+    "kept": ["IJON_STATE(archive_entry_filetype(entry));"]
+  },
+  "takeaway": "On a fresh real target, the agent blind-diagnosed the class-2 roadblock and re-derived the entry-type state annotation; the deterministic A/B shows the headroom (filter+format+type sequence -> 233x). Same gradient as libpng (sequences on shared code) and libtpms (command orderings)."
+}
