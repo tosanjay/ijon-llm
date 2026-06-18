@@ -139,6 +139,15 @@ def main() -> int:
             accepted[target_file] = candidate       # commit
             kept.append((target_file.name, prop.annotation.code))
             baseline_cov = after_cov
+            # keep the model's view in sync with what it has already kept, so the
+            # next iteration sees its own annotation and looks for the NEXT
+            # roadblock (matches harness/loop.py AnalystLoop + run_target.py). The
+            # build already accumulates via `accepted`; this aligns what the model
+            # sees. The proposal's anchor came from `focused`, so it places here.
+            try:
+                focused = apply_annotation(focused, prop.annotation)
+            except ValueError:
+                pass   # anchor not in the localized slice; revert-history still guides
         else:
             note = (f"no new source coverage ({baseline_cov.n_functions}->"
                     f"{after_cov.n_functions} fns); annotation did not let the fuzzer "
