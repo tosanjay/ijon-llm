@@ -1,6 +1,8 @@
 {
   "name": "libarchive",
   "source_name": "libarchive read path (multi-format entry loop)",
+  "annotate": "harness",
+  "fairness_gate": true,
   "harness": "src/archive_fuzzer.c",
   "focus": ["src/archive_fuzzer.c"],
   "seeds": "in",

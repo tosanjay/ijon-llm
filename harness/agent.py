@@ -91,6 +91,20 @@ BEFORE that `if`, not inside its body. In a loop, place it inside the loop body
 so it fires each iteration. `after_substring` selects the line to insert AFTER,
 so pick the statement that precedes the gate.
 
+ANCHOR RULES (critical -- a bad anchor makes the patch fail to COMPILE):
+`after_substring` MUST identify an EXECUTABLE STATEMENT line that sits INSIDE a
+function body. Your annotation is a C statement, so the line you insert it after
+must be one where a following statement is legal AND your state variable is
+already in scope and live. NEVER anchor on:
+- a preprocessor directive or any line containing `#if`/`#ifdef`/`#ifndef`/
+  `#define`/`#endif`/`#else` or a bare `defined(...)` -- inserting a statement
+  there lands outside any function or splits a macro and will not compile;
+- a function signature / opening-brace line, a variable or type DECLARATION, a
+  `struct`/`enum` body, a label, or a comment line.
+Prefer a line that ends in `;` or `{` within the function where the state is
+computed. The variable in your annotation must be declared at or above that line
+in the same function (e.g. a function parameter or a local already assigned).
+
 EXISTING ANNOTATIONS: the target source may already contain IJON_* calls added
 in earlier iterations. Treat them as working prior steps — never propose one
 identical to what is already there. If the fuzzer is still stuck, the barrier
@@ -105,8 +119,48 @@ Reply with ONLY a JSON object, no prose, no markdown, of this exact shape:
   "annotation": {
     "macro": "<IJON_SET | IJON_INC | IJON_MAX | IJON_MIN | IJON_STATE | IJON_CMP | IJON_STRDIST>",
     "code": "<one C statement to insert verbatim, e.g. SOMEMACRO(expr);>",
-    "after_substring": "<an exact, unique substring of the source LINE to insert the statement AFTER>",
+    "after_substring": "<an exact, unique substring of an EXECUTABLE STATEMENT line (inside a function body; NOT a #if/#define/declaration/comment) to insert the statement AFTER>",
     "placement_reason": "<why this location: the variables must be in scope and updated each relevant iteration>"
+  }
+}"""
+
+
+_REPAIR_SYSTEM = """\
+You are a C build-repair assistant. A fuzzing analyst chose an IJON annotation to
+insert into a target; applying or compiling it FAILED. Your job is NARROW: return
+a corrected annotation that COMPILES and is placed legally, while PRESERVING the
+analyst's intent. You are an engineer fixing a colleague's patch, not a re-designer.
+
+KEEP (do NOT change unless the error proves it is impossible here):
+- the macro / primitive (IJON_CMP, IJON_STATE, IJON_SET, ...),
+- the program state it tracks (the variable/expression being exposed),
+- the analyst's failure_class and why_stuck.
+
+FIX only the mechanics that caused the failure:
+- PLACEMENT: `after_substring` must match an EXECUTABLE STATEMENT line INSIDE a
+  function body where the referenced variables are in scope -- never a preprocessor
+  line (#if/#define/#endif/defined(...)), a declaration, a function signature, a
+  label, or a comment. If the statement landed in the wrong place, move the anchor
+  to a real statement line near where the state is computed.
+- SYNTAX: balance parentheses, add a needed cast, fix a typo, qualify a field
+  (e.g. png_ptr->field), reference a variable that is actually in scope. Make the
+  minimal edit that makes the compiler accept it.
+
+Read the compiler error's file:line and message literally; it tells you what is
+wrong. If the analyst's state genuinely cannot be referenced at any compilable
+location in the shown source, return your closest valid attempt anyway -- the outer
+loop will escalate back to the analyst.
+
+Reply with ONLY a JSON object of the analyst's exact shape:
+{
+  "why_stuck": "<carry over unchanged>",
+  "failure_class": "<carry over unchanged>",
+  "relevant_state": "<carry over unchanged>",
+  "annotation": {
+    "macro": "<same primitive as the analyst chose>",
+    "code": "<one corrected C statement to insert verbatim>",
+    "after_substring": "<an exact substring of a real EXECUTABLE STATEMENT line to insert AFTER>",
+    "placement_reason": "<what you changed and why it now compiles / is in scope>"
   }
 }"""
 
@@ -213,3 +267,47 @@ def propose_annotation(model: AnalystModel, source: str, snap: Snapshot,
     user = build_user_prompt(source, snap, source_name, history, localization)
     res = model.complete_json(_SYSTEM, user, max_tokens=max_tokens)
     return parse_proposal(res.obj, res)
+
+
+def build_repair_prompt(source: str, failed: Annotation, error: str,
+                        macro: str, relevant_state: str,
+                        source_name: str = "target.c",
+                        patched_region: str = None,
+                        localization: str = None) -> str:
+    loc = f"LOCALIZATION:\n{localization}\n\n" if localization else ""
+    region = (f"WHERE YOUR STATEMENT LANDED (the patched region as it failed):\n"
+              f"```c\n{patched_region}\n```\n\n") if patched_region else ""
+    return (
+        f"IJON PRIMITIVE REFERENCE:\n{IJON_REFERENCE}\n\n"
+        f"THE ANALYST'S ANNOTATION THAT FAILED:\n"
+        f"  macro          : {macro}\n"
+        f"  state to expose : {relevant_state}\n"
+        f"  code           : {failed.code}\n"
+        f"  after_substring : {failed.after_substring!r}\n\n"
+        f"BUILD / PLACEMENT ERROR:\n{error}\n\n"
+        f"{region}"
+        f"{loc}"
+        f"TARGET SOURCE ({source_name}):\n```c\n{source}\n```\n\n"
+        f"Return a corrected annotation -- SAME macro and SAME state -- that "
+        f"compiles and is placed on a legal executable statement line. Respond with "
+        f"only the JSON object.")
+
+
+def repair_annotation(model: AnalystModel, source: str,
+                      failed: AnnotationProposal, error: str,
+                      source_name: str = "target.c",
+                      patched_region: str = None,
+                      localization: str = None,
+                      max_tokens: int = 8192) -> AnnotationProposal:
+    """Mechanical fix of a non-building annotation. Preserves the analyst's
+    strategy (macro/state/failure_class are carried over, not re-decided)."""
+    user = build_repair_prompt(source, failed.annotation, error, failed.macro,
+                               failed.relevant_state, source_name,
+                               patched_region, localization)
+    res = model.complete_json(_REPAIR_SYSTEM, user, max_tokens=max_tokens)
+    obj = dict(res.obj or {})
+    # enforce "repair does not change strategy": carry the analyst's fields over.
+    obj["failure_class"] = failed.failure_class
+    obj.setdefault("why_stuck", failed.why_stuck)
+    obj.setdefault("relevant_state", failed.relevant_state)
+    return parse_proposal(obj, res)

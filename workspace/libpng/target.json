@@ -1,0 +1,24 @@
+{
+  "name": "libpng",
+  "source_name": "libpng read path (coverage frontier)",
+  "annotate": "library",
+  "fairness_gate": false,
+  "library_src": "build/libpng",
+  "localize": {
+    "fi": "fi_out/fuzzerLogFile-libpng_crc_fuzzer.data.yaml",
+    "cov": "build/cov/coverage.json"
+  },
+  "harness": "src/libpng_crc_fuzzer.cc",
+  "seeds": "in_single",
+  "reward": "coverage",
+  "build": {
+    "plain": ["bash", "build.sh", "plain"],
+    "cov":   ["bash", "cov-build.sh"],
+    "agent": ["bash", "build.sh", "agent"]
+  },
+  "targets": {
+    "plain": "targets/libpng_crc_plain",
+    "cov":   "targets/libpng_crc_cov",
+    "agent": "targets/libpng_agent"
+  }
+}
