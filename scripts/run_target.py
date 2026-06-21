@@ -222,15 +222,19 @@ class HarnessSite:
 
 
 class LibrarySite:
-    """annotate == 'library': the annotation goes INSIDE the library source. We
-    localize (FI static graph + llvm-cov frontier) to the few functions the
-    fuzzer is stuck behind, place the annotation in the matching library .c, and
-    rebuild the library. Kept annotations accumulate ON DISK; touched files are
-    restored to pristine at the end."""
+    """annotate == 'library': the annotation goes INSIDE the library source AND,
+    when the interesting state lives there, the harness too. We localize (FI
+    static graph + llvm-cov frontier) to the few library functions the fuzzer is
+    stuck behind, also show the harness, place the annotation in whichever file
+    (library .c or harness) holds the chosen anchor, and rebuild. The library-mode
+    build compiles the harness from disk under the IJON pass, so a harness-landed
+    annotation needs no special build path. Kept annotations accumulate ON DISK;
+    touched files are restored to pristine at the end."""
 
     def __init__(self, m: Manifest):
         self.m = m
         self.lib_src = m.path(m.d["library_src"])
+        self.harness = m.path(m.d["harness"]) if m.d.get("harness") else None
         self._pristine: dict[Path, str] = {}   # file -> original content (for restore)
 
     def model_source(self) -> tuple[str, str | None]:
@@ -241,18 +245,32 @@ class LibrarySite:
         parts = []
         for name, text in src.items():
             parts.append(make_clean_source(text) if self.m.fairness else text)
-        self._render = "\n\n".join(parts)
         self._n_funcs = len(src)
+        # Also show the harness: an interesting loop/counter/mode there is fair
+        # game to annotate, not only the library functions above.
+        if self.harness and self.harness.exists():
+            raw = self.harness.read_text(errors="replace")
+            htext = make_clean_source(raw) if self.m.fairness else raw
+            parts.append(
+                f"/* ===== harness: {self.m.d['harness']} ===== */\n"
+                f"/* Everything above is localized LIBRARY source. You may also place\n"
+                f"   the annotation here in the harness if the state you want to expose\n"
+                f"   (a decode loop, an iteration counter, a mode flag) lives here. */\n"
+                f"{htext}")
+        self._render = "\n\n".join(parts)
         return self._render, hint
 
     def render_lines(self) -> int:
         return len(self._render.splitlines())
 
     def _find_file(self, anchor: str):
-        """Library .c whose CURRENT (on-disk, accumulated) content holds `anchor`.
-        Returns (file, exact_anchor_line) -- exact_anchor occurs verbatim so
-        apply_annotation's match succeeds even if the model paraphrased spacing."""
+        """Library .c (or the harness) whose CURRENT (on-disk, accumulated) content
+        holds `anchor`. Returns (file, exact_anchor_line) -- exact_anchor occurs
+        verbatim so apply_annotation's match succeeds even if the model paraphrased
+        spacing. The harness is searched too (it is annotatable in this mode)."""
         files = sorted(self.lib_src.glob("*.c"))
+        if self.harness and self.harness.exists():
+            files = files + [self.harness]                # harness is annotatable too
         for c in files:                                   # exact
             if anchor in c.read_text(errors="replace"):
                 return c, anchor
@@ -267,7 +285,7 @@ class LibrarySite:
         target_file, exact = self._find_file(ann.after_substring)
         if target_file is None:
             return BuildOutcome(False, note=(
-                f"anchor not found in any library source file: "
+                f"anchor not found in any library source file or the harness: "
                 f"{ann.after_substring!r} -- copy an exact line from the shown source"))
         before = target_file.read_text(errors="replace")
         self._pristine.setdefault(target_file, before)    # snapshot first touch

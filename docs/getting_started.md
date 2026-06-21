@@ -1,29 +1,27 @@
 # Getting started — running IJON-Reloaded on a new library
 
-This is the concrete recipe for pointing the agent at a library it has never seen.
-**Part A** is the path you follow to fuzz your own `libxyz` — commands first, prose
-out of the way. **Part B** is the optional A/B harness we use to *measure* the agent
-(skip it unless you're reproducing our numbers). **Part C** explains *why* each step
-is shaped the way it is.
+Point the agent at a library it has never seen. **Part A** is the recipe — the
+commands to fuzz your own `libxyz`, generic and copy-pasteable. **Part B** is the
+optional A/B harness we use to *measure* the agent (skip it unless you're reproducing
+our numbers). **Part C** explains *why* each step is shaped the way it is, and walks
+two real targets — libpng (library mode) and libarchive (harness mode) — end to end.
 
-Two worked examples ship with the repo and are used throughout: **libarchive 3.8.6**
-in *harness mode* ([`workspace/libarchive/`](../workspace/libarchive)) and **libpng**
-in *library mode* ([`workspace/libpng/`](../workspace/libpng)) — the more common case,
-where the annotation goes *inside* the library. Follow Part A verbatim to reproduce
-either, or use them as templates for your own target.
-
-> **The one thing to internalize.** The agent does not explore your codebase or
-> write inputs, and **you do not hand-write the IJON annotation** — that is the
-> agent's whole job. "Running on a new target" is three things *you* set up once —
-> (1) an instrumented harness exposing a clear loop/decision/state site (in the
-> library code for most targets, or in the harness when it drives the decode loop —
-> see A2), (2) a `build.sh` so
-> the loop can rebuild it, (3) a reward that matches the roadblock — and then the
-> loop does the diagnose → annotate → keep/revert part.
+> **The one thing to internalize.** You do **not** hand-write the IJON annotation —
+> that is the agent's whole job. "Running on a new target" is three things *you* set
+> up once: (1) a harness that links the library and decodes one input, (2) a
+> `build.sh` so the loop can rebuild it, (3) a reward that matches your roadblock.
+> Then the loop does the diagnose → annotate → keep/revert part. By default
+> (`--mode library`) the agent is shown the relevant **library** code *and* your
+> harness, and may annotate **either** — the library is where the interesting state
+> lives for most targets, but a loop/counter/mode in the harness is fair game too.
 
 ---
 
 # Part A — Run it on your library
+
+The whole of Part A produces and then runs **one directory**, `workspace/libxyz/`.
+`bringup.py` creates it (A2); you finish filling it (A3–A5); `run_target.py` runs it
+(A6). Wherever you see `libxyz`, substitute your target's short name.
 
 ## A0. Prerequisites
 
@@ -42,297 +40,122 @@ export TMPDIR=/home/you/scratch
 export PATH="$AFL_ROOT:$PATH" AFL_PATH="$AFL_ROOT/include"   # AFL_PATH must be …/include — see C1
 ```
 
-## A1. Get the target source
+## A1. What you bring
+
+Two things, before any of our tooling runs:
+
+- **The library source**, cloned to a directory —
+  `git clone --depth 1 -b <tag> <url> /path/to/libxyz`.
+- **A harness** — a `.c`/`.cc` that links the library and decodes one input from a
+  byte buffer. Most libraries already ship one under `contrib/oss-fuzz/` (or
+  `tests/fuzz/`); `bringup.py` finds it for you in A2. If none exists, write a small
+  persistent-mode harness that calls the library's main decode entry point.
+
+## A2. Generate the workspace
 
 ```bash
-git clone --depth 1 -b v3.8.6 https://github.com/libarchive/libarchive.git
+.venv/bin/python scripts/bringup.py --lib /path/to/libxyz --name libxyz \
+    --mode library --reward coverage
 ```
 
-`build.sh` can clone this itself. If your host lacks autotools (`libtool` etc.) and
-the library ships a generated `./configure`, point the build at a pre-`configure`'d
-tree instead:
+This **creates `workspace/libxyz/`** and writes a draft `build.sh.draft` +
+`target.json.draft` into it, filling the library-specific slots by probing the source
+(build system, the OSS-Fuzz harness, link deps, `./configure` flags). *That directory
+is your workspace* — the `--workspace workspace/libxyz` you pass to the runner in A6.
+Everything for this target lives under it; you don't create the directory yourself.
+
+The two choices, with their defaults:
+
+| Option | Default | Alternative | Pick by |
+|---|---|---|---|
+| `--mode` | **`library`** — the runner localizes to the few library functions the fuzzer is stuck behind *and* also shows your harness; the agent annotates whichever holds the state (library `.c` or harness), and the library is rebuilt each iter | `harness` — shows + annotates the harness *only*; no library localization, no library rebuild (the library stays prebuilt). Use it when the decode state is fully reachable at the harness level (libarchive) and you want to skip the `localize` setup (→ C4) | most targets are `library` |
+| `--reward` | **`coverage`** — keep an annotation if it **reaches new code** (class 3) | `diversity` — if it **reorders** exploration of already-covered code (class 2) | what your fuzzer is stuck on (→ C2) |
+
+## A3. Finish the workspace
+
+`bringup.py` gets the invariant AFL/IJON/ASAN wiring right; you fill the
+library-specific slots it marked `# TODO(verify)` and add the two files it can't
+generate. The finished layout:
+
+```
+workspace/libxyz/
+├── build.sh          ← rename from .draft; fill TODO(verify): repo url/tag, -I/-L/-l, configure pins
+├── target.json       ← rename from .draft; fill source paths (+ library-mode localize block, A4)
+├── src/
+│   └── libxyz_fuzzer.c   ← your harness (copy + adapt the OSS-Fuzz one bringup pointed at)
+└── in/               ← a few valid seed inputs (one per format/path you care about)
+```
+
+`bringup.py` prints the exact deps/flags it found for each `TODO(verify)` line — fill
+those, drop both `.draft` suffixes, then sanity-check the control build:
 
 ```bash
-export LIBARCHIVE_SRC=/path/to/an/already-configured/libarchive-3.8.6
+cd workspace/libxyz
+bash build.sh plain          # clones + builds the library under build/libxyz/, links the control
 ```
 
-## A2. Provide a harness with a clear loop/decision site
+(The three gotchas that bite here — the silent `AFL_PATH` failure, pinning deps for a
+deterministic link, and ASAN being all-or-nothing — are in **C1**; the template
+already handles them, so this is just a checkpoint.)
 
-Two ways to get an instrumented target — pick whichever is less work:
+## A4. (Library mode only) point the localizer at the code
 
-**(a) Instrument an existing utility / fuzz target.** If `libxyz` ships a CLI
-(`bsdtar`, `xmllint`, `djpeg`) or an OSS-Fuzz harness, compile *that* with
-`afl-clang-fast`. You get instrumentation for free.
+Library mode shows the agent only the functions on the **coverage frontier**, so it
+needs two inputs, named in `target.json`'s `localize` block:
 
-**(b) Write a small persistent-mode harness that links the library.** This is what
-we did — a clean, single decode path that's easy to annotate. Template:
-[`workspace/libarchive/src/archive_fuzzer.c`](../workspace/libarchive/src/archive_fuzzer.c).
+- `fi_out/*.data.yaml` — a fuzz-introspector static call graph of the library.
+- `build/cov/coverage.json` — an llvm-cov run of the plain corpus.
 
-Either way, the agent needs a **clear loop / decision / state site to annotate**, and
-you do **not** write any `IJON_*` call yourself. `run_target.py` supports two modes,
-selected by `"annotate"` in the manifest (A6). *Where* the site lives decides which:
+How to produce both is in **C3**. (Harness mode skips this entirely — it uses the
+`focus` list `bringup.py` already wrote into the manifest.)
 
-- **`"annotate": "library"`** *(the common case)* — the meaningful loop or decision is
-  inside `libxyz` (e.g. libpng's per-chunk processing). The runner **localizes** to
-  the few library functions the fuzzer is stuck behind (frontier mode, C4), shows the
-  agent only those, places the annotation **in the matching library `.c`**, and
-  rebuilds the library. Worked example:
-  [`workspace/libpng/`](../workspace/libpng) (manifest + `build.sh agent` below).
-  Annotating only the harness would be useless here — the state you care about never
-  surfaces at the harness level.
-- **`"annotate": "harness"`** *(the libarchive case)* — valid only when the harness
-  itself drives the decode loop **and** the interesting state is reachable through the
-  library's public API. libarchive's per-entry header loop runs in the harness, and
-  `archive_format()` / `archive_entry_filetype()` hand the decoded state back across
-  the API, so a harness-level annotation captures real library state.
+## A5. The reward tool
 
-For libarchive (harness mode) the site is that per-entry header loop:
+The reward you chose in A2 needs one small build variant:
 
-```c
-struct archive_entry *entry;
-for (;;) {
-    int r = archive_read_next_header(a, &entry);
-    if (r == ARCHIVE_EOF || r == ARCHIVE_FATAL) break;
-    if (r == ARCHIVE_RETRY) continue;
+- **`coverage`** (default) → a `cov` build variant (an llvm-cov driver). `bringup.py`
+  left a `cov` slot in `build.sh`; point it at libxyz's coverage build.
+- **`diversity`** → a tiny `describe` tool that decodes each corpus input the way the
+  harness does and prints its token sequence; the loop counts distinct sequences.
 
-    /* one decoded entry header = one state transition.
-       The agent inserts its IJON feedback annotation here. */
+→ C2 for which one fits, and the per-mode templates under `workspace/` for both.
 
-    ... /* consume the entry */
-}
-```
-
-## A3. Write `build.sh` (or generate a draft)
-
-The loop never hard-codes how to build your target; it shells out to your
-workspace's `build.sh <variant>`. **Don't write it from scratch** — generate a draft
-and fill in the slots:
+## A6. Run
 
 ```bash
-.venv/bin/python scripts/bringup.py --lib /path/to/cloned/libxyz --name libxyz \
-    --mode library --reward coverage          # → workspace/libxyz/build.sh.draft + target.json.draft
+.venv/bin/python scripts/run_target.py --workspace workspace/libxyz --iters 3
 ```
 
-`bringup.py` (deterministic, no LLM) emits the **invariant** AFL/IJON/ASAN
-scaffolding — the variant layout, the `AFL_PATH` gotcha, the ASAN-match rule — and
-fills the library-specific slots by probing the source: build system, the OSS-Fuzz
-harness (the best starting point), `./configure --help` `--without-*` options to pin,
-and `-l` deps from `*.pc.in`. The scaffolding is correct by construction; every
-uncertain slot is marked `# TODO(verify)`. Review it, drop the `.draft` suffix, done.
-(For now `bringup.py` covers autotools well; cmake/meson get a skeleton + TODOs.)
-
-For a normal run the `build.sh` has **three** variants
-([`workspace/libarchive/build.sh`](../workspace/libarchive/build.sh)):
-
-| `build.sh <v>` | Produces | Used for |
-|---|---|---|
-| `plain` | `targets/archive_plain` (afl-clang-fast + ASAN, **no** IJON) | the control arm the loop fuzzes to plateau |
-| `agent` | the IJON target the loop rebuilds each iteration | evaluating each proposal |
-| `describe` *or* `cov` | the reward tool (see A4) | keep/revert metric |
-
-The `agent` variant differs by mode — this is the one place library vs harness mode
-shows up in `build.sh`:
-
-- **harness mode** — the runner writes the patched harness to `$IJON_HARNESS`; your
-  `agent` compiles *that* (under `AFL_LLVM_IJON=1`) against the prebuilt library →
-  `$IJON_OUT`. (libarchive's `build.sh agent`.)
-- **library mode** — the runner has already written the annotation into a library
-  `.c` on disk; your `agent` just **recompiles the library under `AFL_LLVM_IJON=1`
-  and relinks the (fixed) harness** → `$IJON_OUT`. The runner reverts the file
-  afterward. (See [`workspace/libpng/build.sh`](../workspace/libpng/build.sh)'s
-  `build_agent`: `make -j4 -C $LIBPNG libpng16.la` then relink.)
-
-```bash
-cd workspace/libarchive
-bash build.sh plain
-md5sum targets/archive_plain   # sanity: a later IJON build must differ from this (C1)
-```
-
-Three gotchas that will bite you — details in **C1**: build the library *once* and
-relink per variant (in library mode, `make` only recompiles the one annotated file);
-pin optional deps so the link is deterministic; and if the library is built with
-ASAN, *every* binary linking it must also pass `-fsanitize=address`.
-
-## A4. Give the loop a class-matched reward
-
-Pick the reward that matches your roadblock (the *why* is in **C2**):
-
-- **Reach new code (class 3)** → `"reward": "coverage"`. Add a `cov` build variant
-  (an llvm-cov driver); keep/revert counts new source functions. This is the
-  [libpng loop](../scripts/libpng_loop.py)'s mode.
-- **Reorder exploration of already-covered code (class 2)** → `"reward": "diversity"`.
-  Coverage won't move (no new functions), so you supply a tiny `describe` tool that
-  decodes each corpus input the way the harness does and prints its token sequence;
-  the loop counts distinct sequences. Template:
-  [`src/archive_describe.c`](../workspace/libarchive/src/archive_describe.c).
-
-```bash
-bash build.sh describe
-./targets/archive_describe in/archive.tar.gz   # → "1.196612:32768 1.196612:32768"
-#                                                  filter.format:filetype  per entry
-```
-
-## A5. Seeds
-
-A handful of valid inputs in `in/`, one per format/filter you care about:
-
-```bash
-tar cf a.tar f; tar czf a.tar.gz f; tar cJf a.tar.xz f   # → workspace/libarchive/in/
-```
-
-Four seeds is plenty; the fuzzer expands from there.
-
-## A6. The manifest — `target.json`
-
-One small file ties it together so `run_target.py` stays target-agnostic
-([`workspace/libarchive/target.json`](../workspace/libarchive/target.json)):
-
-```json
-{
-  "name": "libarchive",
-  "source_name": "libarchive read path (multi-format entry loop)",
-  "harness": "src/archive_fuzzer.c",
-  "focus":   ["src/archive_fuzzer.c"],
-  "seeds":   "in",
-  "reward":  "diversity",
-  "describe":"targets/archive_describe",
-  "build":   { "plain": ["bash","build.sh","plain"],
-               "describe": ["bash","build.sh","describe"],
-               "agent": ["bash","build.sh","agent"] },
-  "targets": { "plain": "targets/archive_plain", "agent": "targets/archive_agent" }
-}
-```
-
-`focus` is what the agent is shown; `reward` selects the keep/revert metric;
-`build.agent` is how the loop rebuilds the agent's annotation. The default
-`"annotate"` is `"harness"`, so libarchive omits it.
-
-For **library mode** the manifest instead names where the library source lives and
-how to localize ([`workspace/libpng/target.json`](../workspace/libpng/target.json)):
-
-```json
-{
-  "name": "libpng",
-  "source_name": "libpng read path (coverage frontier)",
-  "annotate": "library",
-  "library_src": "build/libpng",
-  "localize": { "fi": "fi_out/…data.yaml", "cov": "build/cov/coverage.json" },
-  "harness": "src/libpng_crc_fuzzer.cc",
-  "seeds":  "in_single",
-  "reward": "coverage",
-  "build":  { "plain": ["bash","build.sh","plain"],
-              "cov":   ["bash","cov-build.sh"],
-              "agent": ["bash","build.sh","agent"] },
-  "targets": { "plain": "targets/libpng_crc_plain",
-               "cov":   "targets/libpng_crc_cov",
-               "agent": "targets/libpng_agent" }
-}
-```
-
-Here there is no `focus` list — `localize` (the FI static graph ∩ llvm-cov frontier,
-C4) picks the functions to show the agent, and the annotation is placed in whichever
-`library_src/*.c` holds the agent's chosen anchor line.
-
-## A7. Run
-
-```bash
-.venv/bin/python scripts/run_target.py \
-    --workspace workspace/libarchive --iters 2 \
-    --plateau-timeout 75 --eval-timeout 90
-```
-
-Recorded transcript (abridged):
+The loop fuzzes the plain control to a plateau, then each iteration: shows the agent
+the localized code, takes its proposed annotation, **builds it** (with a repair
+sub-loop that fixes non-compiling edits — C5), fuzzes, and keeps or reverts on the
+reward. A successful iteration reads like:
 
 ```
-[0] fairness gate: 54 lines shown to model; no 'ijon' token present (verified)
-
-1) BUILD + FUZZ the plain control to plateau
-    plateau: corpus=1074 files, distinct sequences=45, edges=1623
-
-2.1) ANALYST proposes
-    why_stuck     : Edge coverage treats every entry loop iteration identically;
-                    the fuzzer cannot distinguish per-entry file types or order.
-    failure_class : known_state_changes               ← class 2, correct, blind
-    IJON_STATE: IJON_STATE(archive_entry_filetype(entry));
-    distinct sequences: base=45 now=160 -> KEEP        ← 3.6x in a 90s window
-
-2.2) ANALYST proposes
-    why_stuck     : The existing IJON_STATE exposes the current file type but not
-                    the order or history… different sequences look identical.
-    IJON_STATE: { static int seq=0; seq=ijon_hashint(seq, …filetype(entry));
-                  IJON_STATE(seq); }                   ← the richer sequence idiom
-    distinct sequences: base=45 now=106 -> revert      ← did not beat iter1 in-window
+[0] localized library source shown to model
+1) plateau: N functions covered
+2.1) ANALYST  missing_intermediate_state   <diagnosis, derived blind>
+     IJON_CMP(...)   placed in <some>.c
+     functions: base=N -> KEEP        ← reached a new function
+VERDICT  kept 1: IJON_CMP(...)
 ```
 
-If `run_target.py` reaches the `VERDICT` banner and the kept annotation moved the
-reward, you've reproduced the libarchive result on your own target. What the run
-shows: the agent **diagnosed class 2 blind** (it saw the same loop code for every
-header, no gradient) and reached for `IJON_STATE`; on iteration 2 it **re-derived
-the rolling-state-hash idiom** after seeing its own iteration-1 annotation; and
-keep/revert **stayed honest** — the richer annotation was conceptually better but
-didn't measurably beat the simpler one in a 90 s window, so the reward didn't credit
-it.
+If the runner reaches the `VERDICT` banner and the kept annotation moved the reward,
+it worked. The source tree is restored pristine afterward — the annotation lived only
+inside the loop.
 
-### Library mode (libpng) and the build-repair loop
+## A7. Checklist for *your* `libxyz`
 
-Library mode is the same command on the libpng manifest:
-
-```bash
-.venv/bin/python scripts/run_target.py --workspace workspace/libpng \
-    --iters 3 --plateau-timeout 100 --eval-timeout 200
-```
-
-```
-[0] 654 lines of real library source (localized) shown to model
-1) plateau: 131 functions covered
-2.1) ANALYST  missing_intermediate_state   chunk_name is a 4-byte magic value, no gradient
-     IJON_CMP(chunk_name, png_iCCP);   after `png_uint_32 chunk_name = png_ptr->chunk_name;`
-     functions: base=131 -> KEEP        ← reaches png_handle_iCCP, a new function
-VERDICT  kept 1: IJON_CMP(chunk_name, png_iCCP)
-```
-
-The agent, shown only the localized **library** functions, blind-diagnoses the
-per-chunk magic-value gate and places `IJON_CMP` *inside `pngrutil.c`* — the same
-annotation the bespoke libpng script keeps.
-
-**The build-repair loop.** The agent is editing real C, so it can produce code that
-doesn't compile (a classic miss: anchoring on a `#if defined(...)` preprocessor
-line). The runner runs a tight inner **correctness** loop, separate from the outer
-keep/revert **effectiveness** loop: it captures the compiler/placement error and
-hands it to a second *repair* agent whose only job is to make it build — preserving
-the analyst's macro and target state, fixing only placement/syntax — then recompiles,
-up to `--build-repair-tries` (default 3). A real rescue:
-
-```
-[repair 1/3] anchor is a preprocessor line (#if/#define/defined(...)); an IJON
-             statement must go on an executable code line ...
-[repair 1] -> IJON_CMP(png_ptr->transformations & PNG_COMPOSE, PNG_COMPOSE);
-             after 'png_debug(1, "in png_do_read_transformations");'
-[repair] fixed after 1 attempt(s)        ← same macro + state, legal placement, builds
-```
-
-Only buildable annotations reach the fuzz/reward stage; if repair can't fix it in N
-tries, the iteration reverts and the *analyst* re-strategizes next round. (Set
-`--repair-model` to use a cheaper model for this mechanical step.)
-
-## A8. The checklist for *your* `libxyz`
-
-1. **Harness + mode** — instrument a utility or write a persistent-mode harness that
-   links `libxyz`. Pick the mode: `"annotate":"library"` for most targets (the state
-   lives inside `libxyz`; add a `localize` block — frontier mode, C4) or
-   `"annotate":"harness"` when the harness drives the decode loop and the state is
-   API-visible (libarchive). **No annotation — the agent writes it.**
-2. **`build.sh`** — generate a draft with `scripts/bringup.py` and fill the
-   `TODO(verify)` slots, or write `plain` + `agent` (library mode: recompile the
-   library + relink; harness mode: compile `$IJON_HARNESS`), plus `describe` (class 2)
-   or `cov` (class 3). The template keeps `AFL_PATH`/ASAN correct for you.
-3. **Reward** — class 2 → a `describe` sequence extractor + `"reward":"diversity"`;
-   class 3 → a `cov` build + `"reward":"coverage"`.
-4. **Seeds** — a few valid inputs in `in/` (or `in_single`).
-5. **`target.json`** — fill in the paths above (library mode also needs
-   `library_src` + `localize`; templates: `workspace/libpng` and `workspace/libarchive`).
-6. **Run** — `.venv/bin/python scripts/run_target.py --workspace workspace/libxyz --iters 3`.
-   The build-repair loop handles compile errors; bump `--build-repair-tries` if needed.
+1. **Inputs** — cloned library source + a harness that links it (A1).
+2. **`bringup.py`** — `--mode library` (default) or `harness`; `--reward coverage`
+   (default) or `diversity`. This **creates `workspace/libxyz/`** (A2).
+3. **Finish the workspace** — rename the two `.draft`s, fill every `TODO(verify)`, add
+   `src/<harness>` and a few `in/` seeds (A3).
+4. **(library mode) localize** — drop in `fi_out/` + `build/cov/` and name them in
+   `target.json` (A4; how in C3).
+5. **Reward tool** — a `cov` build (coverage) or a `describe` tool (diversity) (A5).
+6. **Run** — `run_target.py --workspace workspace/libxyz` (A6). **You never write an
+   `IJON_*` call — the agent does.**
 
 ---
 
@@ -341,12 +164,14 @@ tries, the iteration reverts and the *analyst* re-strategizes next round. (Set
 You do **not** need any of this to fuzz your library — Part A is complete on its own.
 Part B is what *we* add to **grade** the agent: a fixed, hand-written "answer key"
 annotation so we can (1) prove the agent re-derived the insight blind, and (2) put a
-number on how much an ideal annotation is worth, before spending any LLM budget.
+number on how much an ideal annotation is worth, before spending any LLM budget. The
+example here is libarchive (harness mode); the same shape applies in library mode.
 
 ## B1. Add a reference annotation behind `#ifdef _USE_IJON`
 
 This is the answer key — the one place a human writes an `IJON_*` call, and only for
-measurement. Drop it at the same loop site from A2:
+measurement. Drop it at the decode/loop site (for libarchive, the per-entry header
+loop — see C4):
 
 ```c
     /* IJON-ANCHOR: one decoded entry header is one state transition. */
@@ -412,12 +237,14 @@ libpng's 41× chunk sequences and libtpms's 11.5× command sequences.)
   `$AFL_ROOT/include`, the `IJON_*` macros stay undefined, the annotation *silently
   compiles to nothing*, and the "IJON" binary is byte-identical to plain. Always set
   `AFL_PATH=$AFL_ROOT/include`, and check `md5sum` of plain vs IJON differ.
-- **Build the library once, relink the harness per variant.** libarchive's `.a` is
+- **Build the library once, relink the harness per variant.** The library archive is
   built a single time (`afl-clang-fast + -fsanitize=address`); only the tiny harness
-  is recompiled for plain/agent/ijon. Much faster than a full rebuild per iteration.
+  is recompiled for plain/agent/ijon. In library mode `make` then recompiles just the
+  one annotated file. Much faster than a full rebuild per iteration.
 - **Pin optional deps explicitly.** A stray host library (we hit `lz4`) gets
-  auto-detected by `./configure` and then fails to link. We pass
+  auto-detected by `./configure` and then fails to link. Pass
   `--without-bz2lib --without-lz4 …` so the link is deterministic on any host.
+  `bringup.py` lists the candidates it found.
 - **ASAN is all-or-nothing.** If the library is built with `-fsanitize=address`,
   every binary that links it (including `describe`) must also pass
   `-fsanitize=address`, or you get `undefined reference to __asan_report_*`.
@@ -428,45 +255,88 @@ IJON failures fall into classes, and the keep/revert reward has to measure the t
 the annotation actually changes:
 
 - **Class 3 — reach new code.** The annotation unlocks a previously-unreachable
-  branch. Reward = **new source functions** (llvm-cov replay). This is what a naive
-  coverage loop measures, and it's correct *here*.
+  branch. Reward = **new source functions** (llvm-cov replay → `"reward":"coverage"`).
+  This is what a naive coverage loop measures, and it's correct *here*.
 - **Class 2 — reorder exploration of already-covered code.** A class-2 annotation
   adds **no new functions** — it makes the fuzzer distinguish *orders/sequences* of
   code it already runs. A coverage-based reward would see "0 new functions" and
   wrongly revert the best annotation. Reward must instead be **distinct state
-  sequences** (the `describe` tool). This is the step people skip and then wonder why
-  a good annotation gets thrown away.
+  sequences** (a `describe` tool → `"reward":"diversity"`). This is the step people
+  skip and then wonder why a good annotation gets thrown away.
 
-## C3. Why `(filter, format, entry-filetype)` is the right state for libarchive
+## C3. Localization — pointing the agent at the right code (and generating its inputs)
 
-That triple is *invisible to edge coverage*: a tar with `[file, dir, symlink]` and
-one with `[symlink, file, file]` run the **same** loop code in a different order, so
-AFL's edge map cannot tell them apart. `archive_format()` alone also can't tell
-`a.tar` from `a.tar.gz` (it ignores the compression filter), which is why the filter
-code is folded in. That coverage-blind, order-sensitive signal is exactly the gap
-IJON fills — and the gap you look for when choosing an annotation site in your own
-library.
-
-## C4. Localization — how the agent is pointed at the right code
-
-- **Focus mode (used here).** For a compact harness, hand the agent the whole
-  (stripped) harness via `focus`. The annotation site is obvious; no extra setup.
-- **Frontier mode (`"annotate":"library"`).** For a big library where the question is
-  *which of hundreds of functions* is the wall, the localizer intersects a
+- **Focus mode** (harness mode's default). For a compact harness, hand the agent the
+  whole harness via the manifest's `focus` list. The annotation site is obvious; no
+  extra inputs needed. `bringup.py` writes this automatically for `--mode harness`.
+- **Frontier mode** (`--mode library`, the default). For a big library where the
+  question is *which of hundreds of functions* is the wall, the localizer intersects a
   fuzz-introspector static call graph with llvm-cov runtime coverage to find the
-  coverage frontier and feeds only those functions to the agent — and the annotation
-  is placed **in that library source**, not the harness. `run_target.py` does this
-  directly from the manifest's `localize` block; you supply a `fi_out/*.data.yaml`
-  (fuzz-introspector) and a `build/cov/coverage.json` (llvm-cov of the plain corpus).
-  Worked example: [`workspace/libpng`](../workspace/libpng). It is *not* required for
-  small targets — libarchive ran fine in focus mode because its decode state is
-  reachable from the harness.
+  coverage frontier, and feeds those functions to the agent — **plus the harness**, so
+  a harness-level loop/counter is annotatable in the same run (the agent picks
+  whichever file holds the state; the runner places the annotation there and rebuilds).
+  `run_target.py` reads this from the manifest's `localize` block. You produce two
+  files (A4):
+  - **`fi_out/*.data.yaml`** — run fuzz-introspector's static analysis over the
+    library to emit the call graph. (We use the standalone tree-sitter frontend; the
+    `workspace/libpng/fi_out/` files are a worked reference.)
+  - **`build/cov/coverage.json`** — build a coverage variant
+    (`-fprofile-instr-generate -fcoverage-mapping`, see `workspace/libpng/cov-build.sh`),
+    replay the plain corpus, and export with `llvm-cov export … > coverage.json`.
 
   *Open edge (v2):* the localizer points the agent at the right *functions*; pinning
   the exact loop/state *site* within them — and branch-level dataflow localization —
   is the next step on the roadmap.
 
-## C5. Two agents: analyst vs repair
+## C4. Harness mode, worked: libarchive
+
+Harness mode is the exception, valid only when the harness **itself** drives the
+decode loop and the decoded state is reachable through the library's public API.
+libarchive fits: its per-entry header loop runs in the harness, and
+`archive_format()` / `archive_entry_filetype()` hand the decoded state back across the
+API, so a harness-level annotation captures real library state. The site:
+
+```c
+struct archive_entry *entry;
+for (;;) {
+    int r = archive_read_next_header(a, &entry);
+    if (r == ARCHIVE_EOF || r == ARCHIVE_FATAL) break;
+    if (r == ARCHIVE_RETRY) continue;
+
+    /* one decoded entry header = one state transition.
+       The agent inserts its IJON feedback annotation here. */
+
+    ... /* consume the entry */
+}
+```
+
+**Why `(filter, format, entry-filetype)` is the right state.** That triple is
+*invisible to edge coverage*: a tar with `[file, dir, symlink]` and one with
+`[symlink, file, file]` run the **same** loop code in a different order, so AFL's edge
+map cannot tell them apart. `archive_format()` alone also can't tell `a.tar` from
+`a.tar.gz` (it ignores the compression filter), which is why the filter code is folded
+in. That coverage-blind, order-sensitive signal is exactly the gap IJON fills.
+
+A real run (diversity reward, 90 s eval window) — the agent diagnoses this **blind**:
+
+```
+2.1) ANALYST proposes
+    why_stuck     : Edge coverage treats every entry loop iteration identically;
+                    the fuzzer cannot distinguish per-entry file types or order.
+    failure_class : known_state_changes               ← class 2, correct, blind
+    IJON_STATE: IJON_STATE(archive_entry_filetype(entry));
+    distinct sequences: base=45 now=160 -> KEEP        ← 3.6x in a 90s window
+2.2) ANALYST proposes
+    IJON_STATE: { static int seq=0; seq=ijon_hashint(seq, …filetype(entry));
+                  IJON_STATE(seq); }                   ← the richer sequence idiom
+    distinct sequences: base=45 now=106 -> revert      ← did not beat iter1 in-window
+```
+
+It reached for `IJON_STATE` with no gradient to see, and on iteration 2 re-derived the
+rolling-state-hash idiom from its own iteration-1 annotation — while keep/revert stayed
+honest (the richer annotation didn't measurably beat the simpler one in-window).
+
+## C5. Two agents: analyst vs repair (and the build-repair loop)
 
 The loop uses **two roles**, not one, because annotating and fixing-to-compile are
 opposite jobs. The **analyst** is creative/strategic — it decides *what state is
@@ -477,27 +347,61 @@ syntax. Merging them risks the analyst "re-thinking" a build error into a differ
 annotation, discarding the strategy we were trying to compile. So:
 
 - inner **correctness** loop (repair): signal = compiler stderr; bounded by
-  `--build-repair-tries`; if it can't fix it, escalate back out.
+  `--build-repair-tries` (default 3); if it can't fix it, escalate back out.
 - outer **effectiveness** loop (analyst): signal = reward (keep/revert); only ever
   sees *buildable* annotations.
 
 They share one JSON schema, so the analyst's `failure_class`/`why_stuck`/state are
 carried over verbatim on a repair (the repair agent cannot change strategy even if it
-tries). `--repair-model` can point the mechanical step at a cheaper model.
+tries). `--repair-model` can point the mechanical step at a cheaper model. A real
+rescue, where the analyst anchored on a preprocessor line that can't take a statement:
 
-## C6. Honest notes
+```
+[repair 1/3] anchor is a preprocessor line (#if/#define/defined(...)); an IJON
+             statement must go on an executable code line ...
+[repair 1] -> IJON_CMP(png_ptr->transformations & PNG_COMPOSE, PNG_COMPOSE);
+             after 'png_debug(1, "in png_do_read_transformations");'
+[repair] fixed after 1 attempt(s)        ← same macro + state, legal placement, builds
+```
 
-- **No new bug here.** libarchive is OSS-Fuzz-hardened; this round demonstrates the
-  *workflow* and a class-2 state win, not a crash. (As on libtpms.)
+Only buildable annotations reach the fuzz/reward stage; if repair can't fix it in N
+tries, the iteration reverts and the *analyst* re-strategizes next round.
+
+## C6. Library mode, worked: libpng
+
+Library mode is the same `run_target.py` command on a library-mode manifest:
+
+```bash
+.venv/bin/python scripts/run_target.py --workspace workspace/libpng \
+    --iters 3 --plateau-timeout 100 --eval-timeout 200
+```
+
+```
+[0] 654 lines of real library source (localized) shown to model
+1) plateau: 131 functions covered
+2.1) ANALYST  missing_intermediate_state   chunk_name is a 4-byte magic value, no gradient
+     IJON_CMP(chunk_name, png_iCCP);   after `png_uint_32 chunk_name = png_ptr->chunk_name;`
+     functions: base=131 -> KEEP        ← reaches png_handle_iCCP, a new function
+VERDICT  kept 1: IJON_CMP(chunk_name, png_iCCP)
+```
+
+Shown only the localized **library** functions (frontier mode, C3), the agent
+blind-diagnoses the per-chunk magic-value gate and places `IJON_CMP` *inside
+`pngrutil.c`* — the same annotation the bespoke libpng script keeps. This is the
+common case Part A defaults to.
+
+## C7. Honest notes
+
+- **No new bug in these runs.** libarchive and libpng are OSS-Fuzz-hardened; these
+  rounds demonstrate the *workflow* and state wins, not crashes. (As on libtpms.)
 - **Numbers are budget-dependent.** The 233× (full A/B) vs 3.6× (90 s loop window)
   gap is mostly eval-window length and annotation richness, not a contradiction.
   Treat them as evidence of the mechanism, not a fixed score.
 - **Library-mode coverage reward is coarse + noisy in short windows.** Keep/revert at
-  function granularity (`new_vs`) can flip on a function or two between short fuzz
-  runs. The durable signal in the libpng run is *which annotation the agent reaches
-  blind* — `IJON_CMP(chunk_name, png_iCCP)`, the same one the bespoke script keeps —
-  not the exact function delta. For class-2 targets prefer the diversity reward.
-- **One generic runner, target-specific plumbing.** `run_target.py` now drives both
+  function granularity can flip on a function or two between short fuzz runs. The
+  durable signal in the libpng run is *which annotation the agent reaches blind*, not
+  the exact function delta. For class-2 targets prefer the diversity reward.
+- **One generic runner, target-specific plumbing.** `run_target.py` drives both
   harness- and library-mode targets (with localization + the build-repair loop); the
   harness + `build.sh` are inherently per-library. No tool removes the harness step —
   every fuzzer needs one.
