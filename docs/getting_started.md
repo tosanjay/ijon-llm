@@ -275,6 +275,10 @@ the annotation actually changes:
   coverage frontier, and feeds those functions to the agent — **plus the harness**, so
   a harness-level loop/counter is annotatable in the same run (the agent picks
   whichever file holds the state; the runner places the annotation there and rebuilds).
+  Once the agent has engaged the library (any proposal that lands in a library `.c`),
+  the runner **retires the harness to a comment-stripped stub** for later iterations —
+  it stops re-sending the boilerplate but keeps *every executable line*, so no harness
+  site is ever lost and the agent can still annotate there.
   `run_target.py` reads this from the manifest's `localize` block. You produce two
   files (A4):
   - **`fi_out/*.data.yaml`** — run fuzz-introspector's static analysis over the

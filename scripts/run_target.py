@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -79,6 +80,24 @@ class BuildOutcome:
     undo: Callable = lambda: None
     detail: str = ""
     region: str = ""
+    target: Optional[Path] = None   # file the anchor landed in (library .c or harness)
+
+
+def _strip_c_comments(code: str) -> str:
+    """Drop /* ... */ block comments, // line comments, and blank lines, keeping
+    every executable line verbatim. Used to compact the harness once the agent has
+    moved on to the library: comments (license header, boilerplate) go, but no
+    annotatable statement is ever removed -- so retiring the harness can never cost
+    a future annotation. (A '/*' inside a string literal is mis-handled, which is
+    harmless: it only affects what the model READS, never placement, which matches
+    anchors as substrings against the on-disk source.)"""
+    code = re.sub(r"/\*.*?\*/", "", code, flags=re.S)
+    out = []
+    for line in code.splitlines():
+        line = re.sub(r"//.*$", "", line).rstrip()
+        if line.strip():
+            out.append(line)
+    return "\n".join(out)
 
 
 def _region(text: str, needle: str, ctx: int = 6) -> str:
@@ -231,11 +250,17 @@ class LibrarySite:
     annotation needs no special build path. Kept annotations accumulate ON DISK;
     touched files are restored to pristine at the end."""
 
+    _HBANNER = "/* ===== harness:"             # stable marker to locate the section
+
     def __init__(self, m: Manifest):
         self.m = m
         self.lib_src = m.path(m.d["library_src"])
         self.harness = m.path(m.d["harness"]) if m.d.get("harness") else None
         self._pristine: dict[Path, str] = {}   # file -> original content (for restore)
+
+    @property
+    def has_harness(self) -> bool:
+        return bool(self.harness and self.harness.exists())
 
     def model_source(self) -> tuple[str, str | None]:
         loc = self.m.d["localize"]
@@ -248,17 +273,31 @@ class LibrarySite:
         self._n_funcs = len(src)
         # Also show the harness: an interesting loop/counter/mode there is fair
         # game to annotate, not only the library functions above.
-        if self.harness and self.harness.exists():
+        if self.has_harness:
             raw = self.harness.read_text(errors="replace")
             htext = make_clean_source(raw) if self.m.fairness else raw
             parts.append(
-                f"/* ===== harness: {self.m.d['harness']} ===== */\n"
+                f"{self._HBANNER} {self.m.d['harness']} ===== */\n"
                 f"/* Everything above is localized LIBRARY source. You may also place\n"
                 f"   the annotation here in the harness if the state you want to expose\n"
                 f"   (a decode loop, an iteration counter, a mode flag) lives here. */\n"
                 f"{htext}")
         self._render = "\n\n".join(parts)
         return self._render, hint
+
+    def compact_harness(self, model_src: str) -> str:
+        """Return model_src with the (full) harness section replaced by a
+        comment-stripped one -- every executable line kept, comments/boilerplate
+        dropped (see _strip_c_comments). Called once the agent has moved to the
+        library, to stop re-sending the full harness each iteration. Safe even if
+        called too early: no annotatable statement is ever removed."""
+        idx = model_src.find(self._HBANNER)
+        if idx < 0 or not self.has_harness:
+            return model_src
+        code = _strip_c_comments(model_src[idx:])         # also drops banner/intro comments
+        note = (f"{self._HBANNER} {self.m.d['harness']} (comments stripped to save "
+                f"context; every code line kept -- still annotatable) ===== */\n")
+        return model_src[:idx] + note + code + "\n"
 
     def render_lines(self) -> int:
         return len(self._render.splitlines())
@@ -310,8 +349,10 @@ class LibrarySite:
         except RuntimeError as e:
             undo()
             return BuildOutcome(False, note=f"failed to build: {_build_err(e)}",
-                                detail=str(e), region=_region(patched, ann.code.split('(')[0]))
-        return BuildOutcome(True, binary=self.m.path(self.m.d["targets"]["agent"]), undo=undo)
+                                detail=str(e), region=_region(patched, ann.code.split('(')[0]),
+                                target=target_file)
+        return BuildOutcome(True, binary=self.m.path(self.m.d["targets"]["agent"]),
+                            undo=undo, target=target_file)
 
     def cleanup(self):
         for f, original in self._pristine.items():        # leave the tree pristine
@@ -408,6 +449,7 @@ def main() -> int:
           f"build-repair-tries={args.build_repair_tries}")
     history, kept = [], []
     best_reward = base_reward
+    harness_compacted = False     # retire (comment-strip) the harness once the agent moves to the library
     try:
         for it in range(1, args.iters + 1):
             banner(f"2.{it}) ANALYST proposes (prior failed: {len(history)})")
@@ -468,6 +510,20 @@ def main() -> int:
                 note = (f"no reward gain (reward {reward_kind}: {best_reward} -> {r}); "
                         f"raw IJON edge growth does not count — try a different state/primitive")
                 history.append((p, note))
+
+            # Retire-after-resolved: once the agent has placed an annotation in a
+            # LIBRARY file (kept or reverted), it has engaged the library, so stop
+            # re-sending the full harness. The compacted harness keeps every code
+            # line (only comments drop), so this is safe even if it fires early --
+            # no future harness site is ever lost, and the agent can still annotate
+            # the harness. Harness-targeted iterations leave it at full text.
+            if (m.annotate == "library" and not harness_compacted
+                    and site.has_harness and out.target is not None
+                    and out.target != site.harness):
+                model_src = site.compact_harness(model_src)
+                harness_compacted = True
+                print("    [harness retired: agent engaged the library — sending a "
+                      "comment-stripped harness from now on (all code lines kept)]")
     finally:
         site.cleanup()
 
