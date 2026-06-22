@@ -103,6 +103,9 @@ CMake template: `cmake -G Ninja ... -DCMAKE_C_COMPILER=afl-clang-fast`, a `plain
 suffixes once filled.
 
 ## A4. The build-repair loop (you are the build-doctor)
+*(Mode 2 alternative: with an API key, `scripts/build_doctor.py --workspace
+workspace/libxyz` runs this loop autonomously — build → read error → edit build.sh
+→ rebuild, bounded, guarding the IJON wiring. In Mode 1 you do it yourself:)*
 Iterate to a green build, bounded — do not thrash:
 ```bash
 bash workspace/libxyz/build.sh plain      # read the FIRST real error, fix one slot, repeat
