@@ -53,18 +53,34 @@ def detect_build_system(src: Path) -> str:
 
 
 def find_oss_fuzz(src: Path) -> dict:
-    """Locate an OSS-Fuzz harness + its build.sh, the best starting point."""
-    harnesses, buildsh = [], None
-    for pat in ("contrib/oss-fuzz", "oss-fuzz", "tests/fuzz", "test/fuzz", "fuzz"):
-        d = src / pat
-        if d.is_dir():
-            harnesses += [p for p in d.rglob("*fuzz*.c*") if p.suffix in (".c", ".cc", ".cpp")]
-            bs = list(d.rglob("build.sh"))
-            buildsh = buildsh or (bs[0] if bs else None)
-    # last resort: any *fuzz*.cc under the tree
-    if not harnesses:
-        harnesses = [p for p in src.rglob("*fuzz*.c*")
-                     if p.suffix in (".c", ".cc", ".cpp")][:8]
+    """Locate fuzz harnesses + an OSS-Fuzz build.sh. A harness is identified by
+    DEFINING the libFuzzer entrypoint `LLVMFuzzerTestOneInput`, not by its file
+    name -- libcoap names them *_target.c, others *_fuzzer.cc, etc. This both
+    catches the real harnesses and excludes helper files that merely live in the
+    fuzz dir (e.g. libcoap's coap_fuzz_helper.c)."""
+    exts = (".c", ".cc", ".cpp", ".cxx")
+    # prefer dirs whose name signals fuzzing (tests/oss-fuzz, fuzz, ...); also grab
+    # any build.sh there as the OSS-Fuzz starting point. Fall back to the whole tree.
+    fuzz_dirs = [d for d in src.rglob("*")
+                 if d.is_dir() and any(k in d.name.lower()
+                                       for k in ("fuzz", "oss-fuzz"))]
+    buildsh = None
+    for d in fuzz_dirs:
+        bs = list(d.glob("build.sh"))
+        buildsh = buildsh or (bs[0] if bs else None)
+    search_dirs = fuzz_dirs or [src]
+    cand = {p for d in search_dirs for p in d.rglob("*") if p.suffix in exts}
+
+    def is_harness(p: Path) -> bool:
+        try:
+            return "LLVMFuzzerTestOneInput" in p.read_text(errors="replace")
+        except Exception:
+            return False
+    harnesses = [p for p in sorted(cand) if is_harness(p)]
+    if not harnesses:                      # rare: no entrypoint found -> name-match
+        pats = ("fuzz", "_target", "harness")
+        harnesses = sorted({p for p in cand
+                            if any(k in p.name.lower() for k in pats)})
     return {"harnesses": sorted(set(harnesses)), "buildsh": buildsh}
 
 
@@ -247,7 +263,12 @@ def main() -> int:
     ap.add_argument("--name", default=None, help="short target name (default: dir basename)")
     ap.add_argument("--mode", choices=["library", "harness"], default="library")
     ap.add_argument("--reward", choices=["coverage", "diversity"], default="coverage")
-    ap.add_argument("--harness", default=None, help="harness source (default: detected OSS-Fuzz one)")
+    ap.add_argument("--harness", default=None,
+                    help="harness to use: a file path, OR a substring of a discovered "
+                         "candidate (e.g. --harness pdu_parse_udp). Default: a weak "
+                         "name heuristic -- prefer choosing explicitly.")
+    ap.add_argument("--list-harnesses", action="store_true",
+                    help="list the harness candidates found in --lib and exit")
     ap.add_argument("--repo-url", default="TODO_REPO_URL")
     ap.add_argument("--repo-tag", default="TODO_TAG")
     ap.add_argument("--out", default=None, help="workspace dir to write (default: workspace/<name>)")
@@ -258,24 +279,55 @@ def main() -> int:
         print(f"error: {src} is not a directory"); return 2
     name = args.name or src.name.split("-")[0]
 
-    bs = detect_build_system(src)
     of = find_oss_fuzz(src)
+    if args.list_harnesses:
+        print(f"=== harness candidates in {src} (define LLVMFuzzerTestOneInput) ===")
+        for i, h in enumerate(of["harnesses"], 1):
+            print(f"  {i:2d}. {h.relative_to(src)}")
+        if not of["harnesses"]:
+            print("  (none found)")
+        print("\nPick one:  --harness <path-or-substring>   e.g. --harness pdu_parse_udp")
+        return 0
+
+    bs = detect_build_system(src)
     cfg = scan_configure(src) if bs == "autotools" else {"without": [], "static": False}
     deps = scan_pc_deps(src, name)
 
-    # the OSS-Fuzz harness lives INSIDE the source tree -> a starting point to copy
-    # and adapt into the workspace's own src/. The HARNESS slot is a workspace path.
+    # Resolve the chosen harness SOURCE file in the lib tree. Explicit --harness
+    # (a path, or a unique substring of a candidate) wins; otherwise a WEAK name
+    # heuristic that often guesses wrong (so we print all candidates + how to override).
     core = name[3:] if name.startswith("lib") else name
-    oss = next((h for h in of["harnesses"] if core in h.name.lower()),
-               of["harnesses"][0] if of["harnesses"] else None)
-    oss_rel = str(oss.relative_to(src)) if oss else None
-    if args.harness:
-        harness = args.harness
-        cxx = harness.endswith((".cc", ".cpp", ".cxx"))
-    else:
-        ext = oss.suffix if oss else ".c"
-        cxx = ext in (".cc", ".cpp", ".cxx")
-        harness = f"src/{name}_fuzzer{ext}"
+
+    def resolve_harness(spec):
+        if not spec:
+            return None
+        p = Path(spec)
+        if p.is_file():
+            return p.resolve()
+        matches = [h for h in of["harnesses"] if spec in str(h)]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            print(f"error: --harness '{spec}' matches {len(matches)} candidates; "
+                  f"be more specific:")
+            for h in matches:
+                print(f"   {h.relative_to(src)}")
+            raise SystemExit(2)
+        print(f"error: --harness '{spec}' matched no file or candidate; "
+              f"run --list-harnesses")
+        raise SystemExit(2)
+
+    chosen = resolve_harness(args.harness)
+    if chosen is None:                      # weak heuristic default
+        chosen = next((h for h in of["harnesses"] if core in h.name.lower()),
+                      of["harnesses"][0] if of["harnesses"] else None)
+    try:
+        oss_rel = str(chosen.relative_to(src)) if chosen else None
+    except ValueError:
+        oss_rel = str(chosen) if chosen else None
+    ext = chosen.suffix if chosen else ".c"
+    cxx = ext in (".cc", ".cpp", ".cxx")
+    harness = f"src/{name}_fuzzer{ext}"
 
     params = {
         "name": name, "mode": args.mode, "reward": args.reward,
@@ -292,13 +344,26 @@ def main() -> int:
     bsh.write_text(render_build_sh(params)); bsh.chmod(0o755)
     tj.write_text(render_target_json(params))
 
+    # Copy the chosen harness into the workspace so it is present and ready to
+    # adapt (the HARNESS slot points at this copy, not a TODO placeholder).
+    copied = False
+    if chosen and chosen.is_file():
+        (out / "src").mkdir(parents=True, exist_ok=True)
+        (out / harness).write_text(chosen.read_text(errors="replace"))
+        copied = True
+
+    explicit = bool(args.harness)
     print(f"=== bring-up probe: {name} ({src}) ===")
     print(f"  build system : {bs}")
     print(f"  OSS-Fuzz     : {len(of['harnesses'])} harness candidate(s)"
           + (f"; build.sh at {of['buildsh'].relative_to(src.parent)}" if of["buildsh"] else ""))
-    for h in of["harnesses"][:5]:
-        print(f"                 - {h.relative_to(src.parent)}")
-    print(f"  chosen harness: {harness}  ({'C++' if cxx else 'C'})")
+    for i, h in enumerate(of["harnesses"], 1):
+        mark = " <- chosen" if (chosen and h == chosen) else ""
+        print(f"                 {i:2d}. {h.relative_to(src)}{mark}")
+    pick = "explicit (--harness)" if explicit else "WEAK name heuristic — verify / override with --harness"
+    print(f"  chosen harness: {oss_rel}  [{pick}]")
+    print(f"                  -> copied into {harness}  ({'C++' if cxx else 'C'})"
+          if copied else f"                  (HARNESS slot: {harness} — fill it)")
     print(f"  configure     : static={cfg.get('static')}  "
           f"{len(cfg.get('without', []))} --without-* options")
     print(f"  link deps     : {' '.join(deps) or '(none found — verify *.pc.in)'}")

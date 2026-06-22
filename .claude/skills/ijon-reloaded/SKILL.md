@@ -67,11 +67,15 @@ Reason these out by **reading the repo** (tree, build files, the harness `#inclu
    if it's autotools and `libtool`/`libtoolize` is **missing on the host**, the
    `./autogen.sh` path fails — **pivot to CMake** if the repo ships `CMakeLists.txt`
    (libcoap did exactly this). Check: `command -v libtool libtoolize`.
-2. **Harness pick (if several).** Choose by *which exercises the stateful decode you
-   care about*, NOT alphabetically. `bringup.py` falls back to the first file when no
-   filename matches the lib name — that is usually wrong (libcoap has 18 harnesses,
-   none named "coap"). Read candidates; pick the single-message/decode one to start
-   (e.g. `pdu_parse_udp`, not `async`).
+2. **Harness pick (if several) — the USER's call, not yours to silently make.** List
+   the candidates first: `bringup.py --lib <src> --name <n> --list-harnesses` (finds
+   every file defining `LLVMFuzzerTestOneInput`; libcoap has 18). **Present the list to
+   the user and ask which one** unless they already named it — they may care about a
+   specific harness. The auto-pick is a WEAK name heuristic and often wrong (libcoap's
+   harnesses contain no "coap", so it guesses `async_target.c`). Once chosen, pass it:
+   `--harness pdu_parse_udp` (a path or a unique substring); bringup copies it into the
+   workspace's `src/`. If the user has no preference, suggest the single-message/decode
+   one to start (e.g. `pdu_parse_udp`, not `async`) and confirm.
 3. **Mode.** `library` (default — annotation inside the lib; needs localization) vs
    `harness` (only when the harness itself drives the decode loop and state is
    reachable via the public API, e.g. libarchive).
