@@ -1,0 +1,24 @@
+{
+  "name": "libcoap",
+  "source_name": "libcoap CoAP PDU parse path (option-sequence diversity)",
+  "annotate": "library",
+  "fairness_gate": false,
+  "library_src": "build/libcoap/src",
+  "localize": {
+    "fi": "fi_out/fuzzerLogFile-coap_pdu_fuzzer.data.yaml",
+    "cov": "build/cov/coverage.json"
+  },
+  "harness": "src/coap_pdu_fuzzer.c",
+  "seeds": "in",
+  "reward": "diversity",
+  "describe": "targets/coap_pdu_describe",
+  "build": {
+    "plain":    ["bash", "build.sh", "plain"],
+    "describe": ["bash", "build.sh", "describe"],
+    "agent":    ["bash", "build.sh", "agent"]
+  },
+  "targets": {
+    "plain": "targets/coap_pdu_plain",
+    "agent": "targets/coap_pdu_agent"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "name": "libcoap",
+  "source_name": "libcoap CoAP PDU parse path (coverage frontier)",
+  "annotate": "library",
+  "fairness_gate": false,
+  "library_src": "build/libcoap/src",
+  "localize": {
+    "fi": "fi_out/fuzzerLogFile-coap_pdu_fuzzer.data.yaml",
+    "cov": "build/cov/coverage.json"
+  },
+  "harness": "src/coap_pdu_fuzzer.c",
+  "seeds": "in",
+  "reward": "coverage",
+  "build": {
+    "plain": ["bash", "build.sh", "plain"],
+    "cov":   ["bash", "cov-build.sh"],
+    "agent": ["bash", "build.sh", "agent"]
+  },
+  "targets": {
+    "plain": "targets/coap_pdu_plain",
+    "cov":   "targets/coap_pdu_cov",
+    "agent": "targets/coap_pdu_agent"
+  }
+}

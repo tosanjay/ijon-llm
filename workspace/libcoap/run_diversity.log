@@ -1,0 +1,50 @@
+[0] 229 lines of real library source (localized) shown to model (fairness gate OFF: existing annotations, if any, are kept visible)
+
+========================================================================
+1) BUILD + FUZZ the plain control to plateau
+========================================================================
+    plateau: corpus=822 files, distinct sequences=145, edges=408
+    analyst=deepseek/deepseek-v4-pro  repair=deepseek/deepseek-v4-pro  build-repair-tries=3
+
+========================================================================
+2.1) ANALYST proposes (prior failed: 0)
+========================================================================
+    model: deepseek/deepseek-v4-pro
+    why_stuck      : The fuzzer parses valid CoAP PDUs but all option sequences hit the same loop edges. Coverage treats every valid option identically, so the fuzzer cannot explore deeper state spaces that depend on the order and number of options.
+    failure_class  : known_state_changes
+    relevant_state : opt - pdu->token (the byte offset after each parsed option, which tracks the option sequence)
+    IJON_STATE: IJON_STATE((int)(opt - pdu->token));
+    after_substring: 'size_t optsize = next_option_safe(&opt, &length, &pdu->max_opt);'
+    placing annotation; building AFL+IJON ...
+    distinct sequences: base=145 best=145 now=189 (2477 files) -> KEEP
+    [harness retired: agent engaged the library — sending a comment-stripped harness from now on (all code lines kept)]
+
+========================================================================
+2.2) ANALYST proposes (prior failed: 0)
+========================================================================
+    model: deepseek/deepseek-v4-pro
+    why_stuck      : The fuzzer cannot generate the specific option numbers (e.g. well-known CoAP options) needed to exercise length‑validation functions inside coap_pdu_parse_opt_csm / coap_pdu_parse_opt_base. Edge coverage is blind to the option number because the parsing loop executes the same branches regardless of the numeric value of pdu->max_opt.
+    failure_class  : known_relevant_state_values
+    relevant_state : pdu->max_opt (option number) and the current byte offset (opt - pdu->token)
+    IJON_STATE: IJON_STATE(ijon_hashint((int)(opt - pdu->token), pdu->max_opt));
+    after_substring: 'IJON_STATE((int)(opt - pdu->token));'
+    placing annotation; building AFL+IJON ...
+    distinct sequences: base=145 best=189 now=182 (28014 files) -> revert
+
+========================================================================
+2.3) ANALYST proposes (prior failed: 1)
+========================================================================
+    model: deepseek/deepseek-v4-pro
+    why_stuck      : The fuzzer generates PDU packets with few options, limiting option-sequence diversity. Edge coverage saturates because the same loop body executes for every option, and no new branches are taken. Maximizing the offset (opt - pdu->token) will push the fuzzer to explore packets with longer option chains, creating new state sequences.
+    failure_class  : known_relevant_state_values
+    relevant_state : opt - pdu->token (the current byte offset from the token start, indicating how many option bytes have been parsed)
+    IJON_MAX: IJON_MAX((int)(opt - pdu->token));
+    after_substring: 'IJON_STATE((int)(opt - pdu->token));'
+    placing annotation; building AFL+IJON ...
+    distinct sequences: base=145 best=189 now=136 (17619 files) -> revert
+
+========================================================================
+VERDICT
+========================================================================
+    reward (diversity): plain=145 -> best=189  (1.3x)
+    kept 1 annotation(s): [('IJON_STATE', 'IJON_STATE((int)(opt - pdu->token));')]

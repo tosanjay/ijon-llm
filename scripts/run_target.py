@@ -134,9 +134,9 @@ def _anchor_problem(line: str) -> str | None:
 
 
 class Manifest:
-    def __init__(self, ws: Path):
+    def __init__(self, ws: Path, manifest: str = "target.json"):
         self.ws = ws
-        self.d = json.loads((ws / "target.json").read_text())
+        self.d = json.loads((ws / manifest).read_text())
         # manifest env are DEFAULTS only -- the real environment always wins
         for k, v in self.d.get("env", {}).items():
             os.environ.setdefault(k, v)
@@ -400,10 +400,14 @@ def main() -> int:
                     help="model for the build-repair agent (default: same as --model)")
     ap.add_argument("--build-repair-tries", type=int, default=3,
                     help="max compile-fix-recompile attempts per annotation (0 disables)")
+    ap.add_argument("--manifest", default="target.json",
+                    help="manifest filename within the workspace (default: target.json; "
+                         "use e.g. target_diversity.json to run a variant that shares the "
+                         "same clone/build/localize artifacts)")
     args = ap.parse_args()
 
     ws = (REPO / args.workspace).resolve()
-    m = Manifest(ws)
+    m = Manifest(ws, args.manifest)
     cfg = AflConfig(); cfg.check()
     seeds = m.path(m.d["seeds"])
     reward_kind = m.d.get("reward", "diversity")
@@ -460,7 +464,7 @@ def main() -> int:
             # annotations and finds the NEXT roadblock.
             p = propose_annotation(model, model_src, snap,
                                    source_name=m.d["source_name"], history=history,
-                                   localization=localization)
+                                   localization=localization, reward_kind=reward_kind)
             print(f"    why_stuck      : {p.why_stuck}")
             print(f"    failure_class  : {p.failure_class}")
             print(f"    relevant_state : {p.relevant_state}")

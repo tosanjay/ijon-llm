@@ -210,10 +210,38 @@ def _history_block(history: list) -> str:
     return "\n".join(lines) + "\n\n"
 
 
+def reward_guidance(reward_kind: str = None) -> str:
+    """How the keep/revert reward judges the annotation, so the analyst aligns the
+    KIND of annotation it proposes. Generic across targets — the runner passes the
+    manifest's reward type. Without it the analyst can propose a perfectly-reasoned
+    annotation that the active metric structurally cannot credit (e.g. a class-2
+    sequence annotation under a coverage reward, or vice versa)."""
+    if reward_kind == "diversity":
+        return (
+            "HOW YOUR ANNOTATION IS JUDGED (reward = DISTINCT STATE SEQUENCES):\n"
+            "An annotation is KEPT only if it makes the fuzzer retain MORE distinct\n"
+            "state sequences — different ORDERS, COUNTS, or repetitions of code that\n"
+            "is ALREADY covered. Reaching a new function is NOT required and is NOT\n"
+            "credited by itself. So favor exposing ordering/sequence/repetition state\n"
+            "at the loop that processes each element (typically IJON_STATE on a\n"
+            "running/rolling value, or IJON_SET on a per-iteration value). A pure\n"
+            "reach-new-branch annotation (e.g. IJON_CMP toward one magic value) will\n"
+            "usually NOT move this reward.\n\n")
+    if reward_kind == "coverage":
+        return (
+            "HOW YOUR ANNOTATION IS JUDGED (reward = NEW CODE REACHED):\n"
+            "An annotation is KEPT only if the fuzzer reaches new functions. Favor\n"
+            "exposing the gating value (magic byte/tag, length, count) that guards an\n"
+            "uncovered branch — often IJON_CMP/IJON_MAX toward a target — so the\n"
+            "fuzzer gets a gradient to satisfy the gate.\n\n")
+    return ""
+
+
 def build_user_prompt(source: str, snap: Snapshot,
                       source_name: str = "target.c",
                       history: list = None,
-                      localization: str = None) -> str:
+                      localization: str = None,
+                      reward_kind: str = None) -> str:
     loc = ""
     if localization:
         loc = (f"LOCALIZATION (for a large multi-function target, this is where "
@@ -223,6 +251,7 @@ def build_user_prompt(source: str, snap: Snapshot,
         f"IJON PRIMITIVE REFERENCE:\n{IJON_REFERENCE}\n\n"
         f"FUZZER SITUATION (plateaued):\n{_telemetry_block(snap)}\n"
         f"{_history_block(history)}"
+        f"{reward_guidance(reward_kind)}"
         f"{loc}"
         f"TARGET SOURCE ({source_name}):\n```c\n{source}\n```\n\n"
         f"Analyze why the fuzzer is stuck and propose exactly one IJON "
@@ -259,12 +288,14 @@ def propose_annotation(model: AnalystModel, source: str, snap: Snapshot,
                        source_name: str = "target.c",
                        history: list = None,
                        localization: str = None,
+                       reward_kind: str = None,
                        max_tokens: int = 8192) -> AnnotationProposal:
     # v4-pro is a reasoning model: its chain-of-thought (reasoning_content) is
     # billed as completion tokens, so on a big multi-function source the reasoning
     # alone can approach 4096 and truncate the JSON answer -> empty/partial object.
     # 8192 leaves headroom; cheap targets simply stop early and cost less.
-    user = build_user_prompt(source, snap, source_name, history, localization)
+    user = build_user_prompt(source, snap, source_name, history, localization,
+                             reward_kind)
     res = model.complete_json(_SYSTEM, user, max_tokens=max_tokens)
     return parse_proposal(res.obj, res)
 
