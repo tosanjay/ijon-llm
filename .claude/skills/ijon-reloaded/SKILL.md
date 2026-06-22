@@ -150,19 +150,35 @@ that `annotate`, `reward`, all `build`/`targets` paths, and `localize` resolve.
 
 # Phase B — Run & analyze the loop
 
-In Mode 1 **you are the analyst** (default — no key needed). Two ways:
+In Mode 1 **you are the analyst** (default — no key needed). Drive the loop with
+`scripts/analyst_cli.py`, which does the mechanical steps **identically to
+`run_target.py`** (same plateau, same reward) so you only supply the *brain* — the
+annotation edit. You do NOT hand-roll llvm-cov replay or sequence counting; the CLI
+reuses run_target's helpers.
 
-- **You drive it (CC-as-analyst).** Build+fuzz the plain control to a plateau; read
-  the localized library source (`build_localization_context`) + the harness; **write
-  one `IJON_*` annotation** into the matching library `.c` (or harness); rebuild the
-  `agent` variant; fuzz the eval window; measure the reward (replay corpus through the
-  cov build for coverage, or the `describe` tool for diversity) vs the plain baseline;
-  **keep or revert**; repeat for the next roadblock. This mirrors `run_target.py`'s
-  loop — read it to match its mechanics exactly.
-- **Delegate to Mode 2** (only if the user provides a deepseek/API key and wants the
-  autonomous agent): `.venv/bin/python -u scripts/run_target.py --workspace
-  workspace/libxyz --iters 3 --plateau-timeout 100 --eval-timeout 200 [--manifest
-  target_diversity.json] 2>&1 | tee run.log`.
+```bash
+# 1. baseline: build plain + reward tool, fuzz the control, record baseline
+.venv/bin/python scripts/analyst_cli.py plateau --workspace workspace/libxyz \
+    [--manifest target_diversity.json] --plateau-timeout 100
+# 2. read what to annotate (localization frontier + the localized source + harness)
+.venv/bin/python scripts/analyst_cli.py context --workspace workspace/libxyz [--manifest ...]
+# 3. >>> YOU: Edit ONE IJON_* annotation into the matching library .c (or harness) <<<
+# 4. evaluate: build the IJON agent, fuzz the eval window, KEEP/REVERT vs baseline
+.venv/bin/python scripts/analyst_cli.py eval --workspace workspace/libxyz [--manifest ...] \
+    --eval-timeout 200 --note "IJON_STATE(...)"
+#    KEEP   -> leave your edit; go to step 2 for the NEXT roadblock (context now
+#              shows your kept annotation, so you build on it).
+#    REVERT -> undo your edit (Edit it back out / `git checkout` the file) and try a
+#              different state/primitive. If the build FAILED, fix placement/syntax
+#              (you are also the repair agent) and re-run `eval`.
+```
+You own the source edits, so you manage keep/revert by editing files (the CLI never
+touches sources). Leave the tree pristine when done.
+
+**Delegate to Mode 2** instead (only if the user provides a deepseek/API key and
+wants the fully autonomous agent): `.venv/bin/python -u scripts/run_target.py
+--workspace workspace/libxyz --iters 3 --plateau-timeout 100 --eval-timeout 200
+[--manifest target_diversity.json] 2>&1 | tee run.log`.
 
 ## Analyst craft (when you write the annotation)
 Read `harness/agent.py`'s `_SYSTEM` + `IJON_REFERENCE` for the primitives and the

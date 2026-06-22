@@ -28,3 +28,7 @@ workspace/dmg2img/max.dmg
 workspace/libtpms/NVChip
 CLAUDE.md
 docs/*.pdf
+
+# CC-as-analyst (Mode 1) transient per-run state
+.analyst_state.json
+workspace/*/.analyst_state.json
