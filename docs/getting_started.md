@@ -15,6 +15,13 @@ two real targets — libpng (library mode) and libarchive (harness mode) — end
 > harness, and may annotate **either** — the library is where the interesting state
 > lives for most targets, but a loop/counter/mode in the harness is fair game too.
 
+> **Two ways to run it.** This walkthrough uses the **standalone** path (Mode 2): the
+> Python agents drive everything via the DeepSeek API. The same workflow also runs
+> **inside Claude Code** (Mode 1) via the [`ijon-reloaded` skill](../.claude/skills/ijon-reloaded/SKILL.md),
+> where Claude Code itself is the build-doctor *and* the analyst — **no DeepSeek key
+> needed**. The steps below map 1:1; Mode 1 just has CC do them interactively (and use
+> `scripts/analyst_cli.py` for the loop instead of `run_target.py`).
+
 ---
 
 # Part A — Run it on your library
@@ -46,10 +53,17 @@ Two things, before any of our tooling runs:
 
 - **The library source**, cloned to a directory —
   `git clone --depth 1 -b <tag> <url> /path/to/libxyz`.
-- **A harness** — a `.c`/`.cc` that links the library and decodes one input from a
-  byte buffer. Most libraries already ship one under `contrib/oss-fuzz/` (or
-  `tests/fuzz/`); `bringup.py` finds it for you in A2. If none exists, write a small
-  persistent-mode harness that calls the library's main decode entry point.
+- **A harness** — a `.c`/`.cc` that turns one input buffer into one decode. It can be
+  either:
+  - an **OSS-Fuzz / libFuzzer harness** (`LLVMFuzzerTestOneInput`), shipped under
+    `contrib/oss-fuzz/`, `tests/oss-fuzz/`, `tests/fuzz/`; `bringup.py` discovers these
+    (A2), or
+  - a **utility the library already ships** (`bsdtar`, `xmllint`, `djpeg`, libarchive's
+    `untar.c`) — a program with its own `main` that reads a file/stdin. You point
+    `bringup.py` at it directly (A2).
+
+  If neither fits, write a small persistent-mode harness calling the library's decode
+  entry point. (`bringup.py` handles the build differences automatically — see A2.)
 
 ## A2. Generate the workspace
 
@@ -70,6 +84,30 @@ The two choices, with their defaults:
 |---|---|---|---|
 | `--mode` | **`library`** — the runner localizes to the few library functions the fuzzer is stuck behind *and* also shows your harness; the agent annotates whichever holds the state (library `.c` or harness), and the library is rebuilt each iter | `harness` — shows + annotates the harness *only*; no library localization, no library rebuild (the library stays prebuilt). Use it when the decode state is fully reachable at the harness level (libarchive) and you want to skip the `localize` setup (→ C4) | most targets are `library` |
 | `--reward` | **`coverage`** — keep an annotation if it **reaches new code** (class 3) | `diversity` — if it **reorders** exploration of already-covered code (class 2) | what your fuzzer is stuck on (→ C2) |
+
+**Choosing the harness.** Don't trust the auto-pick — it's a weak name heuristic.
+List what's there and choose:
+
+```bash
+.venv/bin/python scripts/bringup.py --lib /path/to/libxyz --name libxyz --list-harnesses
+#   -> numbered list of every file defining LLVMFuzzerTestOneInput
+.venv/bin/python scripts/bringup.py --lib … --name libxyz --mode library --reward coverage \
+    --harness pdu_parse_udp          # pick by path OR a unique substring; copied into src/
+```
+
+`--harness` also takes a path to a **utility** that isn't a libFuzzer harness (e.g.
+`--harness examples/untar.c`). `bringup.py` detects the **kind** and builds it right
+(override with `--harness-kind`):
+
+| kind | built with | AFL feeds it |
+|---|---|---|
+| `libfuzzer` (`LLVMFuzzerTestOneInput`) | `-fsanitize=fuzzer` + ASAN | persistent (no file arg) |
+| `argv` (utility, own `main`, reads a file) | ASAN only (**no** fuzzer flag) | a file via `@@` (`"input":"argv"`) |
+| `stdin` (utility reading stdin) | ASAN only | stdin |
+
+ASAN stays on for **every** kind (and must match the library — all-or-nothing, → C1).
+For an `argv` tool that needs a flag, edit the manifest's `"target_args"` (e.g.
+`["-f","@@"]` for `archivetest -f @@`).
 
 ## A3. Finish the workspace
 

@@ -44,6 +44,7 @@ re-derives a working annotation by reasoning.
 | **Super Mario** *(demo)* | known relevant state values · `IJON_MAX` | blind, reproduces the paper's flagship `IJON_MAX(world_pos)`; that annotation drives a real playthrough (GIF above) — shown as a demo, not an effectiveness benchmark |
 | **libtpms (vTPM)** | known state changes · `IJON_STATE` | 12 h real-target deployment, two autonomous annotations → **11.5×*** more command sequences than plain |
 | **libarchive** (real lib) | known state changes · `IJON_STATE` | the [getting-started](docs/getting_started.md) target: agent blind-diagnoses class 2 and re-derives the entry-type state annotation; reference A/B → **up to 233×** more distinct format/entry *sequences* (budget-dependent) |
+| **libcoap** (real lib) | known state changes · `IJON_STATE` | 5th real target + the Mode-1 bring-up worked example; the *reward-aware* analyst blind-picks class-2 `IJON_STATE` on the CoAP option sequence (a coverage reward kept nothing — wrong axis), in-loop **145 → 189** distinct option sequences (full A/B pending) |
 
 <sub>\* **A conservative number with known headroom.** The class-3 annotation
 landed semantically in the library (`IJON_SET(command.index)` in `ExecCommand.c`),
@@ -93,13 +94,16 @@ fuzz → plateau → [localize] → [LLM: diagnose + annotate] → patch+rebuild
 ## Layout
 
 ```
-harness/        deterministic harness + the LLM analyst (stdlib + LiteLLM)
-  config.py · fuzzer.py · plateau.py · build.py · model.py · agent.py · loop.py · coverage.py · localize.py
-scripts/        reproduce_m1, solve_target_llm, autonomous, run_target (generic real-lib loop),
-                bringup (draft build.sh + target.json for a new lib),
+harness/        deterministic harness + the LLM roles (stdlib + LiteLLM)
+  config.py · fuzzer.py · plateau.py · build.py · model.py · agent.py (analyst + repair) ·
+  build_doctor.py (standalone build-doctor) · loop.py · coverage.py · localize.py
+scripts/        reproduce_m1, solve_target_llm, autonomous, run_target (generic real-lib loop, Mode 2),
+                analyst_cli (CC-as-analyst loop, Mode 1), build_doctor (standalone build-doctor, Mode 2),
+                bringup (draft build.sh + target.json + harness discovery for a new lib),
                 annotation_comparison, libpng_{loop,convergence,autonomy}, mario_{annotation,video}
+.claude/skills/ijon-reloaded/   the Claude Code skill (Mode 1 — CC as build-doctor + analyst)
 experiments/    reproducible records: human_vs_llm, libpng_convergence, libpng_autonomy, mario, libtpms, libarchive
-workspace/<t>/  per-target: src/ (canonical harness), seeds, build.sh, target.json (real libs)
+workspace/<t>/  per-target: src/ (harness), seeds, build.sh, target.json (libcoap, libpng, libarchive, …)
 docs/           getting_started.md + architecture-design.md + the HTML write-up (writeup/)
 tests/          unittest suite for the deterministic logic
 ```
@@ -109,7 +113,9 @@ tests/          unittest suite for the deterministic logic
 - **AFL++ with IJON** (`AFL_LLVM_IJON=1` support) — point `AFL_ROOT` at it (or edit
   `harness/config.py`).
 - **LLVM** with `llvm-cov`/`clang` for source-coverage builds — `LLVM_BIN`.
-- A **DeepSeek API key** in `DEEPSEEK_API_KEY` (env or `.env`; see `.env.example`).
+- A **DeepSeek API key** in `DEEPSEEK_API_KEY` (env or `.env`; see `.env.example`) —
+  for **Mode 2 / standalone** runs. **Mode 1 (the Claude Code skill) needs no extra
+  key** — it uses Claude Code's own model.
 - Python venv with LiteLLM: `python3 -m venv .venv && .venv/bin/pip install litellm`.
 
 ```bash
@@ -135,40 +141,56 @@ Model defaults to `deepseek/deepseek-v4-pro`; override with `--model` or `IJON_L
 
 ### Run on your own library
 
-Real libraries (you cloned `libxyz` — now what?) need a harness that links the
-library, a `build.sh`, and a class-matched reward. Don't hand-write the build —
-[`scripts/bringup.py`](scripts/bringup.py) probes the source (build system, OSS-Fuzz
-harness, `configure` flags, `*.pc.in` deps) and emits a draft `build.sh` +
-`target.json` with the AFL/IJON/ASAN scaffolding already correct; you fill the
-`TODO(verify)` slots. The generic runner
-[`scripts/run_target.py`](scripts/run_target.py) then drives the full loop from that
-manifest — in **two modes**:
+You cloned `libxyz` — now what? You need a harness that links it, a `build.sh`, and
+a class-matched reward. There are **two ways to drive it**:
 
-- **`"annotate":"library"`** *(common)* — localizes (FI graph ∩ llvm-cov frontier) to
-  the stuck functions, places the annotation **inside the library `.c`**, rebuilds.
-  Example: [`workspace/libpng`](workspace/libpng) — the agent blind-derives
-  `IJON_CMP(chunk_name, png_iCCP)`, the same annotation our bespoke libpng script keeps.
-- **`"annotate":"harness"`** — annotates the harness, when it drives the decode loop
-  and state is API-visible. Example: [`workspace/libarchive`](workspace/libarchive).
+- **Mode 1 — inside Claude Code (no extra API key).** The
+  [`ijon-reloaded` skill](.claude/skills/ijon-reloaded/SKILL.md) turns Claude Code
+  *itself* into the agent — it brings up the build, picks the reward, and acts as the
+  analyst, using its own tools. Open the repo in Claude Code and ask it to fuzz your
+  library. Uses CC's model; needs **no DeepSeek key**.
+- **Mode 2 — standalone (autonomous, headless).** The Python agents run the whole
+  thing via the DeepSeek API — the research artifact and the CI / no-CC path.
+
+Both ride the same deterministic core:
+
+1. **Bring-up.** [`scripts/bringup.py`](scripts/bringup.py) probes the source (build
+   system, harnesses, `configure`/cmake flags, `*.pc.in` deps) and emits a draft
+   `build.sh` + `target.json` with the AFL/IJON/ASAN scaffolding already correct.
+   You fill the `TODO(verify)` slots — or, in Mode 2,
+   [`scripts/build_doctor.py`](scripts/build_doctor.py) (a third *build-doctor* agent)
+   reads the compiler/linker errors and fixes `build.sh` in a bounded loop.
+   The **harness** can be an OSS-Fuzz/libFuzzer harness *or* a utility the library
+   ships (`bsdtar`, `xmllint`): `bringup.py --list-harnesses` lists candidates,
+   `--harness <path-or-substring>` picks one, and its *kind* (libFuzzer / argv-`@@` /
+   stdin) sets the build and how AFL feeds input.
+2. **Loop.** [`scripts/run_target.py`](scripts/run_target.py) (Mode 2) or
+   [`scripts/analyst_cli.py`](scripts/analyst_cli.py) (Mode 1, CC-as-analyst) drives:
+   fuzz to plateau → localize → annotate → rebuild → keep/revert.
+
+The annotation goes **inside the library by default** (`"annotate":"library"`; the
+harness is shown too and is fair game) — localized via the FI ∩ llvm-cov frontier.
+Match the **reward** to the roadblock: `"reward":"coverage"` (reach new code) or
+`"reward":"diversity"` (reorder/sequence already-covered code, via a small `describe`
+tool); a `--manifest` flag lets a diversity variant share one workspace.
 
 ```bash
-.venv/bin/python scripts/run_target.py --workspace workspace/libpng --iters 3
+.venv/bin/python scripts/run_target.py --workspace workspace/libcoap --iters 3   # Mode 2
 ```
 
 Because the agent edits real C, a **two-role** design keeps it honest: the *analyst*
-chooses the annotation; a separate *repair* agent fixes any compiler/placement error
-(preserving the analyst's macro + state) in a bounded compile→fix→recompile inner
-loop, so only buildable annotations reach keep/revert. The fairness gate (hide a
-planted answer) is **opt-in** (`"fairness_gate":true`) — off by default so the agent
-sees your real source, including annotations you already added.
+chooses the annotation; a separate *repair* agent fixes compiler/placement errors
+(preserving the analyst's macro + state) so only buildable annotations reach
+keep/revert. The fairness gate (hide a planted answer) is **opt-in**
+(`"fairness_gate":true`) — off by default so the agent sees your real source.
 
 📘 **[`docs/getting_started.md`](docs/getting_started.md)** is the concrete,
-command-by-command walkthrough (both modes, with real transcripts). It's use-first:
-**you never hand-write an IJON annotation — the agent does that.** Part A fuzzes your
-own `libxyz`; the optional Part B covers the A/B scaffold we use to *measure* the
-agent. The per-library jobs — the harness and `build.sh` — have worked templates in
-[`workspace/libpng`](workspace/libpng) and [`workspace/libarchive`](workspace/libarchive);
-the localize/diagnose/annotate/repair/keep-revert loop is the reusable part.
+command-by-command walkthrough. **You never hand-write an IJON annotation — the agent
+does that.** Worked templates: [`workspace/libcoap`](workspace/libcoap) (CMake,
+library mode, coverage + diversity), [`workspace/libpng`](workspace/libpng)
+(autotools, coverage), [`workspace/libarchive`](workspace/libarchive) (harness mode,
+diversity). The harness + `build.sh` are the per-library jobs; the
+localize/diagnose/annotate/repair/keep-revert loop is the reusable part.
 
 ## Honest negatives (reported, not hidden)
 
