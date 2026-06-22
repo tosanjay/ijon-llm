@@ -105,7 +105,8 @@ def cmd_plateau(m: "rt.Manifest", args) -> int:
         m.build("describe")
         plain_bin = m.path(m.d["targets"]["plain"])
         snap, plain_q = rt.fuzz(plain_bin, seeds, ws / "out" / "analyst_plain",
-                                cfg, ws, args.plateau_timeout, stop_on_crash=False)
+                                cfg, ws, args.plateau_timeout, stop_on_crash=False,
+                                target_args=m.target_args)
         base, nfiles = rt.diversity(m.path(m.d["describe"]), plain_q)
         print(f"    plateau: corpus={nfiles} files, distinct sequences={base}, "
               f"edges={snap.edges_found if snap else '?'}")
@@ -117,7 +118,8 @@ def cmd_plateau(m: "rt.Manifest", args) -> int:
         m.build("cov")
         plain_bin = m.path(m.d["targets"]["plain"])
         snap, plain_q = rt.fuzz(plain_bin, seeds, ws / "out" / "analyst_plain",
-                                cfg, ws, args.plateau_timeout, stop_on_crash=False)
+                                cfg, ws, args.plateau_timeout, stop_on_crash=False,
+                                target_args=m.target_args)
         probe = CoverageProbe(m.path(m.d["targets"]["cov"]), LLVM,
                               Path(os.environ.get("TMPDIR", "/tmp")) / "analyst_cov")
         base_cov = probe.measure(plain_q, tag="base")
@@ -160,7 +162,7 @@ def cmd_eval(m: "rt.Manifest", args) -> int:
 
     rt.banner("FUZZ the agent build (eval window)")
     snap, q = rt.fuzz(agent_bin, seeds, ws / "out" / "analyst_eval", cfg, ws,
-                      args.eval_timeout, stop_on_crash=True)
+                      args.eval_timeout, stop_on_crash=True, target_args=m.target_args)
     if snap and snap.solved:
         print(f"    [SOLVED] crash found ({snap.saved_crashes}) — annotation reached a goal")
         return 0

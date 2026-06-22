@@ -152,6 +152,15 @@ class Manifest:
     def fairness(self) -> bool:
         return bool(self.d.get("fairness_gate", False))
 
+    @property
+    def target_args(self) -> list:
+        """Args appended after the target on the afl-fuzz command line. Explicit
+        manifest "target_args" wins; else derived from "input": an argv/utility
+        harness gets ["@@"] (file placeholder), a fuzzer/stdin harness gets []."""
+        if "target_args" in self.d:
+            return list(self.d["target_args"])
+        return ["@@"] if self.d.get("input") == "argv" else []
+
     def build(self, variant: str, extra_env: dict | None = None) -> str:
         cmd = self.d["build"][variant]
         env = dict(os.environ); env.update(extra_env or {})
@@ -182,10 +191,12 @@ def diversity(describe_bin: Path, queue: Path) -> tuple[int, int]:
 
 
 def fuzz(target: Path, seeds: Path, out: Path, cfg: AflConfig, ws: Path,
-         timeout: float, stop_on_crash: bool, min_stall: int = 30):
+         timeout: float, stop_on_crash: bool, min_stall: int = 30,
+         target_args: list = None):
     if out.exists():
         shutil.rmtree(out, ignore_errors=True)
-    fc = FuzzerController(target, seeds, out, cfg, cwd=ws, stop_on_crash=stop_on_crash)
+    fc = FuzzerController(target, seeds, out, cfg, cwd=ws, stop_on_crash=stop_on_crash,
+                         target_args=target_args)
     det = PlateauDetector(min_stall_seconds=min_stall)
     fc.run_until(lambda s: s.solved or det.is_plateau(s), timeout=timeout, poll=3.0)
     return fc.snapshot(), out / "default" / "queue"
@@ -430,7 +441,8 @@ def main() -> int:
         m.build("describe")
     plain_bin = m.path(m.d["targets"]["plain"])
     snap, plain_q = fuzz(plain_bin, seeds, ws / "out" / "rt_plain", cfg, ws,
-                         args.plateau_timeout, stop_on_crash=False)
+                         args.plateau_timeout, stop_on_crash=False,
+                         target_args=m.target_args)
     if reward_kind == "diversity":
         describe = m.path(m.d["describe"])
         base_reward, nfiles = diversity(describe, plain_q)
@@ -486,7 +498,8 @@ def main() -> int:
             agent_bin, undo = out.binary, out.undo
 
             snap2, q = fuzz(agent_bin, seeds, ws / "out" / f"rt_iter{it}", cfg, ws,
-                            args.eval_timeout, stop_on_crash=True)
+                            args.eval_timeout, stop_on_crash=True,
+                            target_args=m.target_args)
             if snap2 and snap2.solved:
                 print(f"    [SOLVED] crash found ({snap2.saved_crashes}) — annotation reached the goal")
                 kept.append((p.macro, used_ann.code)); break

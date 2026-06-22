@@ -84,6 +84,23 @@ def find_oss_fuzz(src: Path) -> dict:
     return {"harnesses": sorted(set(harnesses)), "buildsh": buildsh}
 
 
+def detect_harness_kind(path: Path) -> str:
+    """Classify a harness file: 'libfuzzer' (defines LLVMFuzzerTestOneInput, built
+    with -fsanitize=fuzzer, AFL persistent), 'argv' (has its own main + reads a
+    file from argv -> AFL feeds it via @@), or 'stdin' (main reading stdin). The
+    argv/stdin split can't always be told statically; default a main()-harness to
+    'argv' (the common CLI shape) and let --harness-kind override."""
+    try:
+        txt = path.read_text(errors="replace")
+    except Exception:
+        return "libfuzzer"
+    if "LLVMFuzzerTestOneInput" in txt:
+        return "libfuzzer"
+    if re.search(r"\bmain\s*\(", txt):
+        return "argv"
+    return "libfuzzer"
+
+
 def scan_configure(src: Path) -> dict:
     """Run `./configure --help` (no side effects) for --without-*/--disable-*
     options and static-build support. Falls back to scanning configure.ac."""
@@ -139,7 +156,11 @@ def scan_pc_deps(src: Path, name: str) -> list:
 # --------------------------------------------------------------------------- #
 def render_build_sh(p: dict) -> str:
     cc = "afl-clang-fast++" if p["cxx"] else "afl-clang-fast"
-    fuzzer = " -fsanitize=fuzzer"
+    # -fsanitize=fuzzer ONLY for a libFuzzer harness (it supplies main + calls
+    # LLVMFuzzerTestOneInput). A utility/argv or stdin harness has its OWN main, so
+    # the fuzzer driver would clash -- build it as a plain AFL target. ASAN stays
+    # on for EVERY kind (and must match the library: all-or-nothing).
+    fuzzer = " -fsanitize=fuzzer" if p.get("kind", "libfuzzer") == "libfuzzer" else ""
     name = p["name"]
     without_hint = ("   # candidates to pin (the deterministic-link lesson): "
                     + " ".join(p["without"][:12])) if p["without"] else \
@@ -241,6 +262,14 @@ def render_target_json(p: dict) -> str:
         "targets": {"plain": f"targets/{p['name']}_plain",
                     "agent": f"targets/{p['name']}_agent"},
     }
+    # how AFL feeds input: libFuzzer/persistent (no extra args) vs an argv/utility
+    # harness fed a file via "@@", vs a stdin reader. Only record when non-default.
+    kind = p.get("kind", "libfuzzer")
+    if kind == "argv":
+        d["input"] = "argv"
+        d["target_args"] = p.get("target_args", ["@@"])  # "@@" = input-file placeholder
+    elif kind == "stdin":
+        d["input"] = "stdin"
     if p["mode"] == "library":
         d["library_src"] = "build/" + p["name"]
         d["localize"] = {"fi": "fi_out/TODO.data.yaml  # fuzz-introspector output",
@@ -269,6 +298,9 @@ def main() -> int:
                          "name heuristic -- prefer choosing explicitly.")
     ap.add_argument("--list-harnesses", action="store_true",
                     help="list the harness candidates found in --lib and exit")
+    ap.add_argument("--harness-kind", choices=["libfuzzer", "argv", "stdin"],
+                    default=None, help="override how the harness takes input "
+                    "(default: auto-detect; a utility with its own main -> argv)")
     ap.add_argument("--repo-url", default="TODO_REPO_URL")
     ap.add_argument("--repo-tag", default="TODO_TAG")
     ap.add_argument("--out", default=None, help="workspace dir to write (default: workspace/<name>)")
@@ -301,9 +333,9 @@ def main() -> int:
     def resolve_harness(spec):
         if not spec:
             return None
-        p = Path(spec)
-        if p.is_file():
-            return p.resolve()
+        for cand in (Path(spec), src / spec):     # a path: cwd-relative, abs, or lib-relative
+            if cand.is_file():
+                return cand.resolve()
         matches = [h for h in of["harnesses"] if spec in str(h)]
         if len(matches) == 1:
             return matches[0]
@@ -328,10 +360,13 @@ def main() -> int:
     ext = chosen.suffix if chosen else ".c"
     cxx = ext in (".cc", ".cpp", ".cxx")
     harness = f"src/{name}_fuzzer{ext}"
+    # harness kind decides the build (-fsanitize=fuzzer or not) + how AFL feeds it
+    kind = args.harness_kind or (detect_harness_kind(chosen) if chosen else "libfuzzer")
+    targs = ["@@"] if kind == "argv" else []
 
     params = {
         "name": name, "mode": args.mode, "reward": args.reward,
-        "buildsystem": bs, "cxx": cxx,
+        "buildsystem": bs, "cxx": cxx, "kind": kind, "target_args": targs,
         "without": cfg.get("without", []), "static": cfg.get("static", False),
         "linklibs": " ".join(deps), "harness": harness, "oss_rel": oss_rel,
         "repo_url": args.repo_url, "repo_tag": args.repo_tag,
@@ -361,7 +396,12 @@ def main() -> int:
         mark = " <- chosen" if (chosen and h == chosen) else ""
         print(f"                 {i:2d}. {h.relative_to(src)}{mark}")
     pick = "explicit (--harness)" if explicit else "WEAK name heuristic — verify / override with --harness"
+    kindnote = {"libfuzzer": "libFuzzer (-fsanitize=fuzzer, AFL persistent)",
+                "argv": "utility/argv (own main, AFL feeds a file via @@)",
+                "stdin": "utility/stdin (own main, AFL feeds stdin)"}[params["kind"]]
     print(f"  chosen harness: {oss_rel}  [{pick}]")
+    print(f"  harness kind  : {params['kind']} — {kindnote}"
+          + ("   (override with --harness-kind)" if not args.harness_kind else ""))
     print(f"                  -> copied into {harness}  ({'C++' if cxx else 'C'})"
           if copied else f"                  (HARNESS slot: {harness} — fill it)")
     print(f"  configure     : static={cfg.get('static')}  "

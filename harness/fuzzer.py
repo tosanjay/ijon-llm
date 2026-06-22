@@ -114,13 +114,19 @@ class FuzzerController:
 
     def __init__(self, target: Path, input_dir: Path, output_dir: Path,
                  config: AflConfig, cwd: Optional[Path] = None,
-                 stop_on_crash: bool = False):
+                 stop_on_crash: bool = False,
+                 target_args: Optional[list] = None):
         self.target = Path(target)
         self.input_dir = Path(input_dir)
         self.output_dir = Path(output_dir)
         self.config = config
         self.cwd = Path(cwd) if cwd else self.target.parent.parent
         self.stop_on_crash = stop_on_crash
+        # args appended after the target on the afl-fuzz command line. Use "@@" as
+        # the input-file placeholder for an argv/utility harness (e.g. ["@@"] or
+        # ["-f", "@@"]); empty (the default) = a libFuzzer/persistent or stdin
+        # harness that AFL feeds without a file argument.
+        self.target_args = list(target_args or [])
         self._proc: Optional[subprocess.Popen] = None
         self._log_path = self.output_dir.parent / f"{self.output_dir.name}_fuzz.log"
 
@@ -151,7 +157,7 @@ class FuzzerController:
             shutil.rmtree(self.output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         cmd = [str(self.config.afl_fuzz), "-i", str(self.input_dir),
-               "-o", str(self.output_dir), "--", str(self.target)]
+               "-o", str(self.output_dir), "--", str(self.target)] + self.target_args
         self._logf = open(self._log_path, "w")
         self._proc = subprocess.Popen(
             cmd, cwd=str(self.cwd), env=self.config.run_env(self.stop_on_crash),

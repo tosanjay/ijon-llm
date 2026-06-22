@@ -67,15 +67,25 @@ Reason these out by **reading the repo** (tree, build files, the harness `#inclu
    if it's autotools and `libtool`/`libtoolize` is **missing on the host**, the
    `./autogen.sh` path fails — **pivot to CMake** if the repo ships `CMakeLists.txt`
    (libcoap did exactly this). Check: `command -v libtool libtoolize`.
-2. **Harness pick (if several) — the USER's call, not yours to silently make.** List
-   the candidates first: `bringup.py --lib <src> --name <n> --list-harnesses` (finds
-   every file defining `LLVMFuzzerTestOneInput`; libcoap has 18). **Present the list to
-   the user and ask which one** unless they already named it — they may care about a
-   specific harness. The auto-pick is a WEAK name heuristic and often wrong (libcoap's
-   harnesses contain no "coap", so it guesses `async_target.c`). Once chosen, pass it:
-   `--harness pdu_parse_udp` (a path or a unique substring); bringup copies it into the
-   workspace's `src/`. If the user has no preference, suggest the single-message/decode
-   one to start (e.g. `pdu_parse_udp`, not `async`) and confirm.
+2. **Harness pick — the USER's call, not yours to silently make.** A harness can be
+   either (a) an **OSS-Fuzz/libFuzzer harness** (`LLVMFuzzerTestOneInput`) or (b) a
+   **utility the library ships** (a `.c` with its own `main` that reads a file/stdin —
+   e.g. libarchive's `bsdtar`/`untar.c`, `xmllint`, `djpeg`). List the libFuzzer ones:
+   `bringup.py --lib <src> --name <n> --list-harnesses` (finds every file defining the
+   entrypoint; libcoap has 18). **Present the list and ask which one** unless the user
+   named it. For a **utility**, point at it directly: `--harness examples/untar.c` (a
+   path relative to the lib src, cwd, or absolute) — utilities are NOT in the libFuzzer
+   list. The auto-pick is a WEAK name heuristic (libcoap's harnesses contain no "coap",
+   so it guesses `async_target.c`); prefer explicit. bringup copies the chosen file
+   into the workspace `src/`.
+   **Harness KIND** (bringup auto-detects; `--harness-kind` overrides) decides build +
+   how AFL feeds input — both must be right or it silently won't fuzz:
+   - `libfuzzer` → built `-fsanitize=fuzzer`; AFL persistent (no file arg).
+   - `argv` (utility w/ `main` reading a file) → built WITHOUT `-fsanitize=fuzzer`; AFL
+     feeds a file via `@@` (manifest `"input":"argv"`, `"target_args":["@@"]` — edit to
+     e.g. `["-f","@@"]` if the tool needs a flag, like libarchive's `archivetest -f @@`).
+   - `stdin` (utility reading stdin) → no `-fsanitize=fuzzer`; AFL feeds stdin.
+   ASAN stays ON for EVERY kind (and must match the library — all-or-nothing).
 3. **Mode.** `library` (default — annotation inside the lib; needs localization) vs
    `harness` (only when the harness itself drives the decode loop and state is
    reachable via the public API, e.g. libarchive).
