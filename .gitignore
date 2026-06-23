@@ -32,3 +32,6 @@ docs/*.pdf
 # CC-as-analyst (Mode 1) transient per-run state
 .analyst_state.json
 workspace/*/.analyst_state.json
+
+# adaptive-campaign run artifacts (rounds, crashes, coverage)
+workspace/*/campaign/

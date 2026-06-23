@@ -94,6 +94,18 @@ class Snapshot:
         return int(self.stats.get("saved_crashes", 0))
 
     @property
+    def bitmap_cvg(self) -> float:
+        """AFL coverage-map density as a percent (0–100). The saturation signal:
+        high density = the fixed bitmap is filling and hash collisions rise, which
+        is when IJON annotations start drowning each other out. Parsed from the
+        fuzzer_stats `bitmap_cvg` field (e.g. '12.34%')."""
+        v = str(self.stats.get("bitmap_cvg", "0")).rstrip("%").strip()
+        try:
+            return float(v)
+        except ValueError:
+            return 0.0
+
+    @property
     def solved(self) -> bool:
         """For the maze, reaching the exit calls abort() -> a saved crash."""
         if self.saved_crashes > 0:
