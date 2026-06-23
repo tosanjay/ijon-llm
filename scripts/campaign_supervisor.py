@@ -93,6 +93,88 @@ def materialize(pristine: dict, active: list) -> dict:
     return out
 
 
+def _tool(llvm_bin: Path, name: str) -> str:
+    p = Path(llvm_bin) / name
+    return str(p) if p.exists() else name
+
+
+def export_coverage(cov_bin: Path, queue: Path, llvm_bin: Path, out_json: Path,
+                    tmp: Path, per_file: bool) -> "Path | None":
+    """Replay a corpus through the llvm-cov build and export coverage JSON (the
+    input load_cov() needs). Shared by the supervisor (Mode 2) and campaign_cli
+    (Mode 1). per_file=True for an argv/utility cov binary (one input at a time);
+    False for a libFuzzer cov binary (all inputs in one run)."""
+    files = sorted(str(p) for p in queue.iterdir() if p.is_file()) \
+        if queue.exists() else []
+    if not files:
+        return None
+    praw, pdat = tmp / "camp.profraw", tmp / "camp.profdata"
+    env = dict(os.environ); env["LLVM_PROFILE_FILE"] = str(praw)
+    if per_file:
+        for fp in files:
+            subprocess.run([str(cov_bin), fp], env=env,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    else:
+        subprocess.run([str(cov_bin), *files], env=env,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if not praw.exists():
+        return None
+    subprocess.run([_tool(llvm_bin, "llvm-profdata"), "merge", "-sparse",
+                    str(praw), "-o", str(pdat)],
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    r = subprocess.run([_tool(llvm_bin, "llvm-cov"), "export",
+                        f"-instr-profile={pdat}", str(cov_bin)],
+                       capture_output=True, text=True)
+    if not r.stdout:
+        return None
+    out_json.write_text(r.stdout)
+    return out_json
+
+
+def localize(fi: dict, cov_bin: Path, queue: Path, lib_src: Path, llvm_bin: Path,
+             out_json: Path, tmp: Path, per_file: bool):
+    """(hint, {func: source}) for the analyst, from the CURRENT corpus's coverage
+    joined with the static FI graph. LLM-free; shared by both modes."""
+    cj = export_coverage(cov_bin, queue, llvm_bin, out_json, tmp, per_file)
+    cov = load_cov(cj) if cj else {}
+    return build_localization_context(fi, cov, source_root=lib_src)
+
+
+def build_agent(m: "rt.Manifest", agent_bin: Path) -> str:
+    """Build the IJON agent binary from the current on-disk (annotated) source.
+    Returns '' on success or the extracted compiler error. Shared by both modes."""
+    env = {"IJON_OUT": str(agent_bin)}
+    if m.annotate == "harness":
+        env["IJON_HARNESS"] = str(m.path(m.d["harness"]))
+    try:
+        m.build("agent", extra_env=env)
+        return ""
+    except RuntimeError as e:
+        return rt._build_err(e)
+
+
+def collect_crashes(round_dir: Path, central: Path, seen_hashes: set) -> int:
+    """Copy a round's crashes/hangs into the central, content-deduped store.
+    Returns the number of NEW unique crashes added. Shared by both modes."""
+    new = 0
+    for sub in ("crashes", "hangs"):
+        d = round_dir / "default" / sub
+        if not d.is_dir():
+            continue
+        for c in d.glob("id:*"):
+            try:
+                h = hashlib.sha1(c.read_bytes()).hexdigest()
+            except Exception:
+                continue
+            if h in seen_hashes:
+                continue
+            seen_hashes.add(h)
+            shutil.copy2(c, central / f"{sub[:-1]}_{h[:12]}_{c.name.replace(':', '_')}")
+            if sub == "crashes":
+                new += 1
+    return new
+
+
 # --------------------------------------------------------------------------- #
 class CampaignSupervisor:
     def __init__(self, m: "rt.Manifest", model, opts):
@@ -128,76 +210,17 @@ class CampaignSupervisor:
             f.write_text(txt)
 
     def _build_agent(self) -> str:
-        env = {"IJON_OUT": str(self.agent_bin)}
-        if self.m.annotate == "harness":
-            env["IJON_HARNESS"] = str(self.m.path(self.m.d["harness"]))
-        try:
-            self.m.build("agent", extra_env=env)
-            return ""
-        except RuntimeError as e:
-            return rt._build_err(e)
+        return build_agent(self.m, self.agent_bin)
 
-    # ---- localization (re-run each intervention on the CURRENT corpus) -------
-    def _tool(self, name: str) -> str:
-        p = self.LLVM / name
-        return str(p) if p.exists() else name
-
-    def _export_coverage(self, queue: Path):
-        files = sorted(str(p) for p in queue.iterdir() if p.is_file()) \
-            if queue.exists() else []
-        if not files:
-            return None
-        tmp = Path(os.environ.get("TMPDIR", "/tmp"))
-        praw, pdat = tmp / "camp.profraw", tmp / "camp.profdata"
-        cj = self.camp / "coverage.json"
-        env = dict(os.environ); env["LLVM_PROFILE_FILE"] = str(praw)
-        if "@@" in self.m.target_args:                # utility cov bin: one file at a time
-            for fp in files:
-                subprocess.run([str(self.cov_bin), fp], env=env,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        else:                                         # libFuzzer cov bin: all files at once
-            subprocess.run([str(self.cov_bin), *files], env=env,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        if not praw.exists():
-            return None
-        subprocess.run([self._tool("llvm-profdata"), "merge", "-sparse",
-                        str(praw), "-o", str(pdat)],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        r = subprocess.run([self._tool("llvm-cov"), "export",
-                            f"-instr-profile={pdat}", str(self.cov_bin)],
-                           capture_output=True, text=True)
-        if not r.stdout:
-            return None
-        cj.write_text(r.stdout)
-        return cj
-
+    # ---- localization / crash aggregation (delegate to shared mechanics) -----
     def _localize(self, queue: Path):
-        cj = self._export_coverage(queue)
-        cov = load_cov(cj) if cj else {}
-        return build_localization_context(self.fi, cov, source_root=self.site.lib_src)
+        return localize(self.fi, self.cov_bin, queue, self.site.lib_src, self.LLVM,
+                        self.camp / "coverage.json",
+                        Path(os.environ.get("TMPDIR", "/tmp")),
+                        per_file="@@" in self.m.target_args)
 
-    # ---- crash aggregation + disk hygiene -----------------------------------
     def _collect_crashes(self, round_dir: Path) -> int:
-        """Copy this round's crashes into the central, deduped store. Returns the
-        number of NEW unique crashes added."""
-        new = 0
-        for sub in ("crashes", "hangs"):
-            d = round_dir / "default" / sub
-            if not d.is_dir():
-                continue
-            for c in d.glob("id:*"):
-                try:
-                    h = hashlib.sha1(c.read_bytes()).hexdigest()
-                except Exception:
-                    continue
-                if h in self.crash_hashes:
-                    continue
-                self.crash_hashes.add(h)
-                dest = self.crashes / f"{sub[:-1]}_{h[:12]}_{c.name.replace(':','_')}"
-                shutil.copy2(c, dest)
-                if sub == "crashes":
-                    new += 1
-        return new
+        return collect_crashes(round_dir, self.crashes, self.crash_hashes)
 
     def _prune_queue(self, round_dir: Path):
         """Drop a superseded round's queue (crashes already collected centrally)."""

@@ -231,6 +231,58 @@ honest magnitude comes from a deterministic full-budget A/B (Part B of getting_s
 
 ---
 
+# Phase C — long bug-hunting campaign (adaptive, optional)
+
+Phase B *finds* good annotations; a **campaign** runs long to *hunt crashes*, and
+re-annotates whenever the fuzzer stalls — automating the human analyst who watches a
+campaign and adds an annotation when it gets stuck. Three ways, by what the user wants:
+
+- **Static** (simplest): build the agent on the kept annotation, then one long
+  `afl-fuzz -V <seconds>` (8 h = `-V 28800`). No re-annotation. Good when they just
+  want to let the kept annotation run.
+- **Adaptive, you drive it (Mode 1, no key)** — the loop below. You own the AFL
+  process + polling; `scripts/campaign_cli.py` does the reliable mechanics so you only
+  supply the analyst decision.
+- **Adaptive, autonomous (Mode 2, needs key)** — `scripts/campaign_supervisor.py`
+  runs the identical loop unattended via the API. Prefer this for a *truly unattended*
+  multi-hour run (a daemon survives better than a held-open session); launch it (or
+  `nohup` it) and just report progress.
+
+**The Mode-1 adaptive loop you drive** (CC owns the process; the CLI owns mechanics):
+1. **Seed + first round.** `campaign_cli.py seed --code … --after …` (the discovery
+   keep) builds the agent. Launch AFL in the **background** (run it backgrounded so you
+   can poll between turns), unique `-o` per round:
+   ```bash
+   afl-fuzz -i <seeds> -o workspace/<t>/campaign/round_1 -- <agent_bin> [@@]
+   #   env: AFL_PATH=$AFL_ROOT/include, ASAN_OPTIONS=…:abort_on_error=1
+   ```
+2. **Poll** `…/round_N/default/fuzzer_stats` periodically: `edges_found`,
+   `time_wo_finds`, `bitmap_cvg`, `saved_crashes`.
+3. **Each round, collect crashes:** `campaign_cli.py collect-crashes --round
+   …/round_N` (dedups into the central `campaign/crashes/`).
+4. **On stall** (`time_wo_finds` large): stop AFL, then
+   `campaign_cli.py localize --queue …/round_N/default/queue` → read the new blocker +
+   localized source → **decide one annotation** → apply the *transaction*:
+   ```bash
+   campaign_cli.py apply --code "IJON_…;" --after "<exact live line>" \
+       --edges <current edges_found> --bitmap-cvg <current bitmap_cvg>
+   ```
+   This keeps/reverts the last annotation, **retires the oldest under map pressure**
+   (your banked-corpus insight — gains persist in the queue), adds the new one, and
+   **recompiles once**.
+5. **Resume** = launch AFL `round_{N+1}` with `-i …/round_N/default/queue` (re-seed
+   from the accumulated queue — robust under the recompiled binary). Repeat.
+6. **End:** `campaign_cli.py finalize` restores the source tree + writes
+   `campaign/summary.json`. Crashes are in `campaign/crashes/`.
+
+Caveat: a CC-driven campaign keeps the *session* alive across the run (you act in
+turns, polling between them) — great for an **attended** run you watch/steer; for an
+unattended 8 h+ run, prefer the Mode-2 supervisor. The map-saturation lever (retire
+under pressure) is what makes a *multi-round* campaign sustainable — don't stack
+annotations without it.
+
+---
+
 # Gotchas quick-reference
 - `AFL_PATH=$AFL_ROOT/include` or IJON silently no-ops (check md5 plain≠agent).
 - `AFL_LLVM_IJON=1` enables the pass; **unset it** for plain/cov/describe builds.
