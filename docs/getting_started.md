@@ -15,12 +15,65 @@ two real targets — libpng (library mode) and libarchive (harness mode) — end
 > harness, and may annotate **either** — the library is where the interesting state
 > lives for most targets, but a loop/counter/mode in the harness is fair game too.
 
-> **Two ways to run it.** This walkthrough uses the **standalone** path (Mode 2): the
-> Python agents drive everything via the DeepSeek API. The same workflow also runs
-> **inside Claude Code** (Mode 1) via the [`ijon-reloaded` skill](../.claude/skills/ijon-reloaded/SKILL.md),
-> where Claude Code itself is the build-doctor *and* the analyst — **no DeepSeek key
-> needed**. The steps below map 1:1; Mode 1 just has CC do them interactively (and use
-> `scripts/analyst_cli.py` for the loop instead of `run_target.py`).
+> **Two ways to run it.** **Mode 2 (standalone)** — the Python agents drive everything
+> via the DeepSeek API; that's the **Part A** recipe below. **Mode 1 (inside Claude
+> Code)** — Claude Code itself is the build-doctor *and* the analyst (**no DeepSeek key
+> needed**), running those same Part A steps for you, interactively. If you want Mode 1,
+> start with the next section, then let Part A serve as the reference for what CC is doing.
+
+---
+
+# Mode 1 — run it inside Claude Code (no DeepSeek key)
+
+In Mode 1 **Claude Code is the agent**: you don't run the Python loop yourself — CC
+brings up the build, picks the harness *with you*, and acts as the analyst, executing
+the Part A steps below on your behalf. The whole entry flow:
+
+**1. Toolchain (same as A0, minus the API key).** The build and fuzzer still run
+locally, so you still need these — Mode 1 only removes the DeepSeek key:
+
+| Need | Export |
+|---|---|
+| AFL++ **with IJON** | `AFL_ROOT=/path/to/AFLplusplus` |
+| LLVM (clang + llvm-cov) | `LLVM_BIN=/path/to/llvm/bin` |
+| Scratch space (not `/tmp`) | `TMPDIR=/your/space` |
+| Python venv + LiteLLM | `.venv` in the repo |
+| ~~DeepSeek API key~~ | **not needed in Mode 1** |
+
+**2. Get this repo and launch Claude Code inside it.** ([Claude Code](https://claude.com/claude-code)
+must be installed.) The skill lives in `.claude/skills/ijon-reloaded/` and registers
+automatically when CC starts in the repo. The venv still needs LiteLLM installed —
+`analyst_cli.py` imports it even in Mode 1 (it just never calls the API). Export the
+env **before** launching `claude` so CC's shell inherits it:
+
+```bash
+git clone <ijon-llm-url> && cd ijon-llm
+python3 -m venv .venv && .venv/bin/pip install litellm
+export AFL_ROOT=/path/to/AFLplusplus            # built with IJON
+export LLVM_BIN=/path/to/llvm/bin
+export TMPDIR=/your/space                        # not /tmp — see C1
+export PATH="$AFL_ROOT:$PATH" AFL_PATH="$AFL_ROOT/include"   # AFL_PATH must be …/include
+claude                                           # start Claude Code IN this directory
+```
+
+**3. Have your target cloned, and tell CC what you want.** For example:
+
+> "Use the ijon-reloaded skill to bring up and fuzz **/path/to/my/cloned/libxyz** with
+> IJON. List the harnesses and let me pick." *(or name one: "use the
+> `tests/oss-fuzz/foo_target.c` harness.")*
+
+(If you give CC the repo URL instead, it can clone the target for you.)
+
+**4. CC drives; you steer at the real decisions.** It will: list/confirm the **harness**
+(it asks you — A2), bring up the build (the **build-doctor**, fixing compile errors as
+they arise — A3/A4), set up the **reward** + localization (A4–A6), then run the
+diagnose → annotate → keep/revert **loop** via `scripts/analyst_cli.py` (the Mode-1
+equivalent of A6's `run_target.py`). You approve the harness and the coverage-vs-
+diversity choice; CC writes the `IJON_*` annotations.
+
+Everything from here on (Part A) is the detailed recipe **CC follows** — read it to
+understand what CC is doing and to check its work. It's written as the standalone
+Mode-2 commands; in Mode 1 CC runs them for you.
 
 ---
 
