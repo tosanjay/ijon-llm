@@ -1,10 +1,12 @@
 # Getting started — running IJON-Reloaded on a new library
 
 Point the agent at a library it has never seen. **Part A** is the recipe — the
-commands to fuzz your own `libxyz`, generic and copy-pasteable. **Part B** is the
-optional A/B harness we use to *measure* the agent (skip it unless you're reproducing
-our numbers). **Part C** explains *why* each step is shaped the way it is, and walks
-two real targets — libpng (library mode) and libarchive (harness mode) — end to end.
+commands to fuzz your own `libxyz`, generic and copy-pasteable. **Part D** is the
+long bug-hunting campaign + crash triage that follows once you have a good annotation.
+**Part B** is the optional A/B harness we use to *measure* the agent (skip it unless
+you're reproducing our numbers). **Part C** explains *why* each step is shaped the way
+it is, and walks two real targets — libpng (library mode) and libarchive (harness
+mode) — end to end. (A → D is the use-flow; B and C are optional deep-dives.)
 
 > **The one thing to internalize.** You do **not** hand-write the IJON annotation —
 > that is the agent's whole job. "Running on a new target" is three things *you* set
