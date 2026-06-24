@@ -250,6 +250,64 @@ inside the loop.
 
 ---
 
+# Part D — Long bug-hunting campaign + crash triage
+
+Part A *discovers* a good annotation in a short loop. To actually hunt **crashes** you
+run a long campaign with that annotation — and, because the fuzzer will stall again
+deeper in, optionally let the analyst re-annotate mid-flight. This works in **both
+modes**, and the crash-triage step is identical in both.
+
+## D1. Run the campaign
+
+Pick by how hands-on you want to be:
+
+- **Static** (simplest — no re-annotation). Build the agent on the kept annotation and
+  let one long `afl-fuzz` run; `8 h = -V 28800`:
+  ```bash
+  afl-fuzz -i workspace/libxyz/in -o workspace/libxyz/campaign/round_1 \
+      -V 28800 -- workspace/libxyz/targets/<agent_bin> [@@]
+  #   env: AFL_PATH=$AFL_ROOT/include, ASAN_OPTIONS=…:abort_on_error=1
+  ```
+- **Adaptive, autonomous (Mode 2, standalone).** A daemon that fuzzes, and on each
+  stall re-localizes → annotates → (retires a mined-out annotation under map pressure)
+  → recompiles → resumes — all via the API:
+  ```bash
+  .venv/bin/python scripts/campaign_supervisor.py --workspace workspace/libxyz \
+      --hours 8 --stall-min 20 --map-pressure 70 2>&1 | tee workspace/libxyz/campaign/run.log
+  ```
+- **Adaptive, inside Claude Code (Mode 1, no key).** *Claude Code* runs the same loop
+  itself — it owns the AFL process + polling and plays the analyst; the mechanics are
+  `scripts/campaign_cli.py` (`localize` / `seed` / `apply` / `collect-crashes` /
+  `finalize`). You just ask CC to run an adaptive campaign; it drives the loop. (See
+  the [`ijon-reloaded` skill](../.claude/skills/ijon-reloaded/SKILL.md), Phase C.)
+
+All three accumulate deduped crashes into **`workspace/libxyz/campaign/crashes/`** and
+a `summary.json`. (The adaptive modes share one mechanical core; the only difference is
+who plays the analyst — the API daemon, or Claude Code.)
+
+## D2. Triage the crashes (same in both modes)
+
+`campaign/crashes/` holds many crash *inputs* but usually far fewer real *bugs*.
+Triage buckets them by `(crash-type, top stack frames)` into the distinct bugs:
+
+```bash
+.venv/bin/python scripts/triage_crashes.py --workspace workspace/libxyz
+#   add --minimize to afl-tmin each representative
+```
+
+It replays each crash through the plain ASAN target (auto-resolved from the manifest,
+including `@@` vs stdin), skips sanitizer-internal frames so the key is the real fault
+site, and writes **`campaign/triage_report.md`** — one entry per bug with its faulting
+`func@file:line`, ASAN summary, count, and a representative input. **Report the
+distinct bugs, not the raw crash-input count.** (Standalone use:
+`--crashes <dir> --target <asan_bin>`.)
+
+> **Mode 1 = Mode 2 here.** The campaign loop and the triage step are the same tooling
+> in both; in Mode 1 Claude Code drives them for you, in Mode 2 you (or the daemon) run
+> the commands above.
+
+---
+
 # Part B — Measuring the agent (optional)
 
 You do **not** need any of this to fuzz your library — Part A is complete on its own.

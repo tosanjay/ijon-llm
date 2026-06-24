@@ -100,6 +100,8 @@ harness/        deterministic harness + the LLM roles (stdlib + LiteLLM)
 scripts/        reproduce_m1, solve_target_llm, autonomous, run_target (generic real-lib loop, Mode 2),
                 analyst_cli (CC-as-analyst loop, Mode 1), build_doctor (standalone build-doctor, Mode 2),
                 bringup (draft build.sh + target.json + harness discovery for a new lib),
+                campaign_supervisor (adaptive long campaign, Mode 2) + campaign_cli (CC-driven, Mode 1),
+                triage_crashes (bucket campaign crashes into distinct bugs),
                 annotation_comparison, libpng_{loop,convergence,autonomy}, mario_{annotation,video}
 .claude/skills/ijon-reloaded/   the Claude Code skill (Mode 1 — CC as build-doctor + analyst)
 experiments/    reproducible records: human_vs_llm, libpng_convergence, libpng_autonomy, mario, libtpms, libarchive
@@ -191,6 +193,14 @@ library mode, coverage + diversity), [`workspace/libpng`](workspace/libpng)
 (autotools, coverage), [`workspace/libarchive`](workspace/libarchive) (harness mode,
 diversity). The harness + `build.sh` are the per-library jobs; the
 localize/diagnose/annotate/repair/keep-revert loop is the reusable part.
+
+**Beyond discovery — bug-hunting.** A long **campaign** runs the kept annotation for
+hours and, on each stall, re-annotates (retiring a mined-out annotation under map
+pressure, since its gains are banked in the corpus) — autonomous via
+[`campaign_supervisor.py`](scripts/campaign_supervisor.py) (Mode 2) or driven by Claude
+Code (Mode 1). [`triage_crashes.py`](scripts/triage_crashes.py) then buckets the
+campaign's crashes into the few distinct bugs. Both work the same in either mode — see
+getting_started **Part D**.
 
 ## Honest negatives (reported, not hidden)
 
