@@ -274,6 +274,13 @@ campaign and adds an annotation when it gets stuck. Three ways, by what the user
    from the accumulated queue — robust under the recompiled binary). Repeat.
 6. **End:** `campaign_cli.py finalize` restores the source tree + writes
    `campaign/summary.json`. Crashes are in `campaign/crashes/`.
+7. **Triage the crashes:** `scripts/triage_crashes.py --workspace workspace/<t>`
+   replays each crash through the plain ASAN target and buckets them by
+   (crash-type, top stack frames) into the few DISTINCT bugs — `campaign/crashes/`
+   holds many inputs but usually far fewer real bugs. Writes
+   `campaign/triage_report.md` (each bug: faulting `func@file:line`, count,
+   representative input); add `--minimize` to afl-tmin each representative. Report
+   the distinct bugs, not the raw crash count.
 
 Caveat: a CC-driven campaign keeps the *session* alive across the run (you act in
 turns, polling between them) — great for an **attended** run you watch/steer; for an
