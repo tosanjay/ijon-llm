@@ -278,10 +278,14 @@ Pick by how hands-on you want to be:
       --hours 8 --stall-min 20 --map-pressure 70 2>&1 | tee workspace/libxyz/campaign/run.log
   ```
 - **Adaptive, inside Claude Code (Mode 1, no key).** *Claude Code* runs the same loop
-  itself — it owns the AFL process + polling and plays the analyst; the mechanics are
-  `scripts/campaign_cli.py` (`localize` / `seed` / `apply` / `collect-crashes` /
-  `finalize`). You just ask CC to run an adaptive campaign; it drives the loop. (See
-  the [`ijon-reloaded` skill](../.claude/skills/ijon-reloaded/SKILL.md), Phase C.)
+  itself and plays the analyst; **`scripts/campaign_cli.py` owns all the mechanics —
+  including the AFL process** so CC never hand-rolls `afl-fuzz`: `start-round` launches
+  a detached round (correct env, fresh `-o`, auto reseed `-i`), `poll` reads
+  fuzzer_stats and flags a stall (observe-only — the live fuzzer is never interrupted to
+  peek), `stop-round` SIGINTs it cleanly; plus `seed` / `localize` / `apply` /
+  `collect-crashes` / `finalize`. You just ask CC to run an adaptive campaign; it drives
+  the loop. (See the [`ijon-reloaded` skill](../.claude/skills/ijon-reloaded/SKILL.md),
+  Phase C.)
 
 All three accumulate deduped crashes into **`workspace/libxyz/campaign/crashes/`** and
 a `summary.json`. (The adaptive modes share one mechanical core; the only difference is

@@ -14,6 +14,18 @@ description: >
 
 # IJON-Reloaded: bring up & run on a new library
 
+## START HERE (read first, don't spelunk)
+On a fresh checkout there is nothing to "discover" by scanning — **this skill plus
+the three committed example workspaces are the orientation.** Do NOT go hunting for a
+`MEMORY.md`, a hidden config, or prior runs; there aren't any. Just:
+1. Read this skill top-to-bottom once, then `docs/getting_started.md` once.
+2. Open the closest committed template and **imitate it** — `workspace/libcoap/`
+   (CMake, library mode, coverage **and** diversity manifests) is the canonical one;
+   `workspace/libpng/` (autotools, coverage) and `workspace/libarchive/` (harness
+   mode, diversity) are the other two.
+3. Everything else (the cloned lib under `build/`, AFL output, coverage data) is
+   gitignored and gets created by the loop — its absence on a fresh clone is normal.
+
 This skill is **Mode 1**: *you* (Claude Code) are the agent — the build-doctor AND
 the annotation analyst — using your own tools (Bash/Read/Write/Edit/WebFetch) and
 reasoning. **No external API key is required.** (Mode 2, the standalone autonomous
@@ -240,29 +252,43 @@ campaign and adds an annotation when it gets stuck. Three ways, by what the user
 - **Static** (simplest): build the agent on the kept annotation, then one long
   `afl-fuzz -V <seconds>` (8 h = `-V 28800`). No re-annotation. Good when they just
   want to let the kept annotation run.
-- **Adaptive, you drive it (Mode 1, no key)** — the loop below. You own the AFL
-  process + polling; `scripts/campaign_cli.py` does the reliable mechanics so you only
-  supply the analyst decision.
+- **Adaptive, you drive it (Mode 1, no key)** — the loop below. `scripts/campaign_cli.py`
+  owns the AFL process *and* the mechanics (`start-round`/`poll`/`stop-round` launch,
+  observe, and stop the fuzzer for you); you only supply the analyst decision — when to
+  stop and what one annotation to add. Don't hand-roll `afl-fuzz`.
 - **Adaptive, autonomous (Mode 2, needs key)** — `scripts/campaign_supervisor.py`
   runs the identical loop unattended via the API. Prefer this for a *truly unattended*
   multi-hour run (a daemon survives better than a held-open session); launch it (or
   `nohup` it) and just report progress.
 
-**The Mode-1 adaptive loop you drive** (CC owns the process; the CLI owns mechanics):
+> **FUZZER DISCIPLINE — the running fuzzer is observe-only.** A live `afl-fuzz` must
+> NOT be interrupted to "check on it." Never Ctrl-C it, never attach, never restart it
+> to inspect — every interruption throws away in-flight progress and corrupts your
+> read of the trend. **Observe only by reading files** (`fuzzer_stats`, `plot_data`)
+> while it keeps running. The fuzzer is stopped **exactly once per round**, on purpose,
+> for a re-annotation cycle (step 4) — and you stop it cleanly (SIGINT, let it flush
+> `fuzzer_stats`), never SIGKILL. Between rounds, poll and wait; do not fidget.
+
+**The Mode-1 adaptive loop you drive** (you decide *when/what*; the CLI owns the
+process + mechanics via `start-round`/`poll`/`stop-round`):
 1. **Seed + first round.** `campaign_cli.py seed --code … --after …` (the discovery
-   keep) builds the agent. Launch AFL in the **background** (run it backgrounded so you
-   can poll between turns), unique `-o` per round:
+   keep) builds the agent. Then launch the round — **do not type `afl-fuzz` yourself**;
+   `start-round` owns the env, the fresh `-o`, the reseed `-i`, and detaches it so it
+   survives between your turns:
    ```bash
-   afl-fuzz -i <seeds> -o workspace/<t>/campaign/round_1 -- <agent_bin> [@@]
-   #   env: AFL_PATH=$AFL_ROOT/include, ASAN_OPTIONS=…:abort_on_error=1
+   campaign_cli.py start-round --workspace workspace/<t>
    ```
-2. **Poll** `…/round_N/default/fuzzer_stats` periodically: `edges_found`,
-   `time_wo_finds`, `bitmap_cvg`, `saved_crashes`.
+2. **Poll** (observe-only — never Ctrl-C the fuzzer to peek):
+   ```bash
+   campaign_cli.py poll --workspace workspace/<t>
+   ```
+   It prints `edges_found`, `time_wo_finds`, `bitmap_cvg`, `saved_crashes`, and flags a
+   **STALL** for you. Poll between turns; let it run.
 3. **Each round, collect crashes:** `campaign_cli.py collect-crashes --round
-   …/round_N` (dedups into the central `campaign/crashes/`).
-4. **On stall** (`time_wo_finds` large): stop AFL, then
-   `campaign_cli.py localize --queue …/round_N/default/queue` → read the new blocker +
-   localized source → **decide one annotation** → apply the *transaction*:
+   workspace/<t>/campaign/round_N` (dedups into the central `campaign/crashes/`).
+4. **On stall** (poll says so): `campaign_cli.py stop-round` (clean SIGINT + flush),
+   then `campaign_cli.py localize --queue …/round_N/default/queue` → read the new blocker +
+   localized source → **decide exactly ONE annotation** → apply the *transaction*:
    ```bash
    campaign_cli.py apply --code "IJON_…;" --after "<exact live line>" \
        --edges <current edges_found> --bitmap-cvg <current bitmap_cvg>
@@ -270,8 +296,19 @@ campaign and adds an annotation when it gets stuck. Three ways, by what the user
    This keeps/reverts the last annotation, **retires the oldest under map pressure**
    (your banked-corpus insight — gains persist in the queue), adds the new one, and
    **recompiles once**.
-5. **Resume** = launch AFL `round_{N+1}` with `-i …/round_N/default/queue` (re-seed
-   from the accumulated queue — robust under the recompiled binary). Repeat.
+   > **The map has a budget — annotations are one-in/one-out, never additive.** AFL's
+   > bitmap is a fixed 64 KB and `IJON_STATE` multiplies its footprint, so you do NOT
+   > stack annotations. The rule is **one annotation per round**, applied through the
+   > transaction above — which is why `apply` takes a single `--code`. The active set is
+   > bounded (`--max-active`, default 6); when it's full or the map is hot
+   > (`bitmap_cvg` high), the *same* `apply` evicts the oldest before adding the new one,
+   > in a single recompile. So "the fuzzer is stuck, add more state" is answered by
+   > **swapping** a fresh annotation in for a mined-out one — never by piling several on
+   > at once (that is exactly what floods the map and makes diversity *worse*). If you
+   > ever feel the urge to add two in one round, add one, run a round, then add the next.
+5. **Resume** = `campaign_cli.py start-round` again — it auto-reseeds `round_{N+1}`
+   from `round_N/default/queue` (robust under the recompiled binary) and assigns a
+   fresh `-o`. Repeat from step 2.
 6. **End:** `campaign_cli.py finalize` restores the source tree + writes
    `campaign/summary.json`. Crashes are in `campaign/crashes/`.
 7. **Triage the crashes:** `scripts/triage_crashes.py --workspace workspace/<t>`
@@ -300,3 +337,7 @@ annotations without it.
 - Pin/disable all optional deps for a deterministic link.
 - Leave the library tree pristine (the loop snapshots+restores; if you edit by hand,
   restore or `git checkout`).
+- A running `afl-fuzz` is observe-only: read `fuzzer_stats`/`plot_data`, never Ctrl-C
+  to peek; stop it cleanly (SIGINT) exactly once per round for re-annotation.
+- One annotation per round; the map is a fixed budget — swap (retire oldest + add),
+  never stack several at once.

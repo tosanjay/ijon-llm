@@ -14,20 +14,35 @@ llvm-cov replay, the retire/keep-revert transaction, or crash dedup:
                     pressure) retire oldest + add the new one -> ONE recompile.
                     CC passes the new annotation and the edges/bitmap_cvg it read
                     from fuzzer_stats; the CLI does the rest and rebuilds.
+    start-round     launch afl-fuzz DETACHED for the next round (correct env, fresh
+                    -o round_N, auto -i = round-1 seeds else prev round's queue);
+                    records the pid in state. Survives this process exiting.
+    poll            read the live round's fuzzer_stats (edges/time_wo_finds/
+                    bitmap_cvg/crashes) + a stall hint, without touching the fuzzer.
+    stop-round      SIGINT the round's fuzzer, wait for it to flush fuzzer_stats.
     collect-crashes copy a round's crashes into the central, deduped campaign/crashes/
     status          show the active set + cumulative crashes
     finalize        restore the source tree to pristine + write campaign/summary.json
 
-CC owns the process/polling loop (launch afl-fuzz background with -i <prev queue>
--o round_N, read fuzzer_stats, detect stall, call `apply`, start the next round).
-State persists in campaign/cc_state.json across invocations. No API key is used.
+CC drives the loop by calling these in order (seed -> start-round -> poll... ->
+stop-round -> collect-crashes -> localize -> apply -> start-round ...); the CLI
+owns ALL process mechanics (detached launch, clean stop, reseed) so CC never
+hand-rolls afl-fuzz invocation, signal handling, or the -i/-o conventions. The
+running fuzzer is observe-only between start-round and stop-round: `poll` reads
+files, it does not attach. State persists in campaign/cc_state.json across
+invocations (incl. the live pid). No API key is used.
 """
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
+import shutil
+import signal
+import subprocess
 import sys
+import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
@@ -36,7 +51,20 @@ sys.path.insert(0, str(REPO)); sys.path.insert(0, str(REPO / "scripts"))
 import run_target as rt
 import campaign_supervisor as cs
 from harness.build import Annotation
+from harness.config import AflConfig
+from harness.fuzzer import parse_fuzzer_stats
 from harness.localize import load_fi
+
+
+def _pid_alive(pid) -> bool:
+    """True if the recorded afl-fuzz pid is still running (EPERM => alive)."""
+    if not pid:
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except OSError as e:
+        return e.errno == errno.EPERM
+    return True
 
 
 def _camp(m): return m.ws / "campaign"
@@ -155,6 +183,130 @@ def cmd_apply(m, args):
     return 0
 
 
+# --------------------------------------------------------------------------- #
+#  Process lifecycle: launch / poll / stop a detached afl-fuzz round.          #
+#  CC used to do this by hand and kept fumbling it (interrupting to "peek",     #
+#  wrong signal, ad-hoc -i/-o). These three own the mechanics so CC only        #
+#  decides WHEN to stop and WHAT to annotate.                                   #
+# --------------------------------------------------------------------------- #
+def _afl(st: dict) -> dict:
+    return st.setdefault("afl", {"pid": None, "round": 0, "out": None,
+                                 "input": None, "running": False})
+
+
+def cmd_start_round(m, args):
+    st = _load(m); afl = _afl(st)
+    if afl.get("running") and _pid_alive(afl.get("pid")):
+        print(f"error: a fuzzer is already running (round {afl['round']}, pid "
+              f"{afl['pid']}, {afl['out']}). Stop it first: `stop-round`.")
+        return 2
+    n = int(afl.get("round", 0)) + 1
+    out = _camp(m) / f"round_{n}"
+    if args.input:
+        inp = Path(args.input).resolve()
+    elif n == 1:
+        inp = m.path(m.d["seeds"])                       # first round: the seeds
+    else:
+        inp = _camp(m) / f"round_{n-1}" / "default" / "queue"   # reseed from prev
+    if not inp.exists() or not any(inp.iterdir()):
+        print(f"error: input dir empty/missing: {inp}")
+        return 2
+    target = m.path(m.d["targets"]["agent"])
+    if not target.exists():
+        print(f"error: agent binary not built: {target} (run `seed`/`apply` first)")
+        return 2
+    cfg = AflConfig(); cfg.check()
+    if out.exists():
+        shutil.rmtree(out, ignore_errors=True)
+    out.mkdir(parents=True, exist_ok=True)
+    cmd = [str(cfg.afl_fuzz), "-i", str(inp), "-o", str(out),
+           "--", str(target)] + m.target_args
+    logf = open(_camp(m) / f"round_{n}.log", "w")
+    # start_new_session: own process group, so it survives this CLI exiting and
+    # `stop-round` can SIGINT the whole group later.
+    proc = subprocess.Popen(cmd, cwd=str(m.ws), env=cfg.run_env(False),
+                            stdout=logf, stderr=subprocess.STDOUT,
+                            start_new_session=True)
+    logf.close()
+    afl.update({"pid": proc.pid, "round": n, "out": str(out),
+                "input": str(inp), "running": True})
+    _save(m, st)
+    print(f"[round {n}] afl-fuzz launched DETACHED (pid {proc.pid})")
+    print(f"    -i {inp}")
+    print(f"    -o {out}")
+    print(f"    log: {_camp(m) / f'round_{n}.log'}")
+    print(f"    observe-only: `campaign_cli.py poll --workspace {args.workspace}` "
+          f"(do NOT Ctrl-C it; stop deliberately with `stop-round`).")
+    return 0
+
+
+def cmd_poll(m, args):
+    st = _load(m); afl = _afl(st)
+    if not afl.get("out"):
+        print("no round has been started yet (`start-round` first)")
+        return 2
+    alive = _pid_alive(afl.get("pid"))
+    stats_p = Path(afl["out"]) / "default" / "fuzzer_stats"
+    if not stats_p.exists():
+        print(f"[round {afl['round']}] pid {afl['pid']} "
+              f"{'alive' if alive else 'NOT running'}; fuzzer_stats not written "
+              f"yet (afl still warming up — poll again shortly)")
+        return 0
+    s = parse_fuzzer_stats(stats_p)
+    rt_ = int(s.get("run_time", 0)); two = int(s.get("time_wo_finds", 0))
+    print(f"[round {afl['round']}] pid {afl['pid']} {'ALIVE' if alive else 'EXITED'}")
+    print(f"    run_time={rt_}s  edges_found={s.get('edges_found')}  "
+          f"bitmap_cvg={s.get('bitmap_cvg')}  corpus={s.get('corpus_count')}")
+    print(f"    time_wo_finds={two}s  saved_crashes={s.get('saved_crashes')}  "
+          f"pending_favs={s.get('pending_favs')}")
+    if not alive:
+        print("    >>> fuzzer EXITED on its own — read the round log, then "
+              "`collect-crashes` and start the next round.")
+    elif rt_ > 0 and two >= max(args.stall_seconds, rt_ // 2):
+        why = "half the run" if two >= rt_ // 2 else f"{args.stall_seconds}s"
+        print(f"    >>> STALL: no new finds for {two}s (>= {why}). Re-annotation "
+              f"cycle: stop-round -> collect-crashes -> localize -> apply -> "
+              f"start-round.")
+    return 0
+
+
+def cmd_stop_round(m, args):
+    st = _load(m); afl = _afl(st)
+    pid = afl.get("pid")
+    if not pid:
+        print("no round to stop")
+        return 0
+    if not _pid_alive(pid):
+        afl["running"] = False; _save(m, st)
+        print(f"[stop] round {afl.get('round')} pid {pid} already exited")
+        return 0
+    # SIGINT the whole process group so afl flushes fuzzer_stats cleanly.
+    try:
+        os.killpg(os.getpgid(pid), signal.SIGINT)
+    except OSError:
+        try:
+            os.kill(pid, signal.SIGINT)
+        except OSError:
+            pass
+    deadline = time.time() + args.timeout
+    while time.time() < deadline and _pid_alive(pid):
+        time.sleep(0.5)
+    if _pid_alive(pid):
+        print(f"[stop] pid {pid} ignored SIGINT for {args.timeout}s; escalating "
+              f"to SIGTERM")
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except OSError:
+            pass
+        time.sleep(2)
+    alive = _pid_alive(pid)
+    afl["running"] = False; _save(m, st)
+    print(f"[stop] round {afl.get('round')} pid {pid} "
+          f"{'STILL ALIVE — kill it manually' if alive else 'stopped cleanly'}; "
+          f"stats at {afl.get('out')}/default/fuzzer_stats")
+    return 0 if not alive else 1
+
+
 def cmd_collect_crashes(m, args):
     st = _load(m)
     central = _camp(m) / "crashes"; central.mkdir(parents=True, exist_ok=True)
@@ -166,16 +318,25 @@ def cmd_collect_crashes(m, args):
 
 
 def cmd_status(m, args):
-    st = _load(m)
+    st = _load(m); afl = _afl(st)
     print(f"campaign: round={st['round']}  active={len(st['active'])}  "
           f"unique_crashes={len(st['crash_hashes'])}")
+    if afl.get("out"):
+        alive = _pid_alive(afl.get("pid"))
+        print(f"  fuzzer: round {afl['round']} pid {afl['pid']} "
+              f"{'RUNNING' if alive else 'stopped'} -> {afl['out']}")
     for a in sorted(st["active"], key=lambda a: a["round_added"]):
         print(f"  [r{a['round_added']}] {a['code']}   ({a.get('dim','')})")
     return 0
 
 
 def cmd_finalize(m, args):
-    st = _load(m)
+    st = _load(m); afl = _afl(st)
+    if afl.get("running") and _pid_alive(afl.get("pid")):
+        print(f"error: round {afl['round']} fuzzer (pid {afl['pid']}) is still "
+              f"running. Stop it first: `stop-round`. (Refusing to restore the "
+              f"source tree out from under a live fuzzer.)")
+        return 2
     for f, txt in st["pristine"].items():          # restore the tree
         Path(f).write_text(txt)
     summary = {"rounds": st["round"], "unique_crashes": len(st["crash_hashes"]),
@@ -192,7 +353,8 @@ def cmd_finalize(m, args):
 def main() -> int:
     ap = argparse.ArgumentParser(description="CC-driven adaptive campaign helpers (Mode 1)")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("localize", "seed", "apply", "collect-crashes", "status", "finalize"):
+    for name in ("localize", "seed", "apply", "start-round", "poll", "stop-round",
+                 "collect-crashes", "status", "finalize"):
         s = sub.add_parser(name)
         s.add_argument("--workspace", required=True)
         s.add_argument("--manifest", default="target.json")
@@ -209,11 +371,21 @@ def main() -> int:
                            help="current bitmap_cvg %% (for the retire-under-pressure gate)")
             s.add_argument("--map-pressure", type=float, default=70.0)
             s.add_argument("--max-active", type=int, default=6)
+        if name == "start-round":
+            s.add_argument("--input", default="",
+                           help="-i dir; default: round-1 seeds, else prev round's queue")
+        if name == "poll":
+            s.add_argument("--stall-seconds", type=int, default=900,
+                           help="time_wo_finds threshold (s) to flag a stall")
+        if name == "stop-round":
+            s.add_argument("--timeout", type=float, default=15.0,
+                           help="seconds to wait for a clean SIGINT exit before SIGTERM")
         if name == "collect-crashes":
             s.add_argument("--round", required=True, help="a round's afl output dir")
     args = ap.parse_args()
     m = rt.Manifest((REPO / args.workspace).resolve(), args.manifest)
     return {"localize": cmd_localize, "seed": cmd_seed, "apply": cmd_apply,
+            "start-round": cmd_start_round, "poll": cmd_poll, "stop-round": cmd_stop_round,
             "collect-crashes": cmd_collect_crashes, "status": cmd_status,
             "finalize": cmd_finalize}[args.cmd](m, args)
 

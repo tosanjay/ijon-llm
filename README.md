@@ -150,7 +150,9 @@ a class-matched reward. There are **two ways to drive it**:
   [`ijon-reloaded` skill](.claude/skills/ijon-reloaded/SKILL.md) turns Claude Code
   *itself* into the agent — it brings up the build, picks the reward, and acts as the
   analyst, using its own tools. Open the repo in Claude Code and ask it to fuzz your
-  library. Uses CC's model; needs **no DeepSeek key**.
+  library (or run `/ijon-reloaded`) — start through the skill rather than scanning the
+  tree; the skill + the three committed `workspace/` examples are the whole map. Uses
+  CC's model; needs **no DeepSeek key**.
 - **Mode 2 — standalone (autonomous, headless).** The Python agents run the whole
   thing via the DeepSeek API — the research artifact and the CI / no-CC path.
 
