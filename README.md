@@ -97,12 +97,15 @@ fuzz → plateau → [localize] → [LLM: diagnose + annotate] → patch+rebuild
 harness/        deterministic harness + the LLM roles (stdlib + LiteLLM)
   config.py · fuzzer.py · plateau.py · build.py · model.py · agent.py (analyst + repair) ·
   build_doctor.py (standalone build-doctor) · loop.py · coverage.py · localize.py
-scripts/        reproduce_m1, solve_target_llm, autonomous, run_target (generic real-lib loop, Mode 2),
-                analyst_cli (CC-as-analyst loop, Mode 1), build_doctor (standalone build-doctor, Mode 2),
-                bringup (draft build.sh + target.json + harness discovery for a new lib),
+ijon_reloaded/  the installable CLIs (exposed as `ijon-reloaded <cmd>` + as scripts/ shims):
+                run_target (generic real-lib loop, Mode 2), analyst_cli (CC-as-analyst loop, Mode 1),
+                bringup (draft build.sh + target.json + harness discovery), build_doctor (Mode 2),
                 campaign_supervisor (adaptive long campaign, Mode 2) + campaign_cli (CC-driven, Mode 1),
-                triage_crashes (bucket campaign crashes into distinct bugs),
+                triage_crashes (bucket campaign crashes into distinct bugs) · cli.py (umbrella dispatch)
+scripts/        thin shims for the CLIs above (so `python scripts/foo.py …` still works) +
+                the research/repro scripts: reproduce_m1, solve_target_llm, autonomous,
                 annotation_comparison, libpng_{loop,convergence,autonomy}, mario_{annotation,video}
+pyproject.toml  packaging: `pip install -e .` (or `uvx ijon-reloaded <cmd>` once published)
 .claude/skills/ijon-reloaded/   the Claude Code skill (Mode 1 — CC as build-doctor + analyst)
 experiments/    reproducible records: human_vs_llm, libpng_convergence, libpng_autonomy, mario, libtpms, libarchive
 workspace/<t>/  per-target: src/ (harness), seeds, build.sh, target.json (libcoap, libpng, libarchive, …)
@@ -118,13 +121,26 @@ tests/          unittest suite for the deterministic logic
 - A **DeepSeek API key** in `DEEPSEEK_API_KEY` (env or `.env`; see `.env.example`) —
   for **Mode 2 / standalone** runs. **Mode 1 (the Claude Code skill) needs no extra
   key** — it uses Claude Code's own model.
-- Python venv with LiteLLM: `python3 -m venv .venv && .venv/bin/pip install litellm`.
+- Python venv + the package (pulls in LiteLLM + PyYAML and installs the
+  `ijon-reloaded` CLI): `python3 -m venv .venv && .venv/bin/pip install -e .`.
+  The editable install is what lets both `ijon-reloaded <cmd>` **and** the
+  `scripts/*.py` entry points resolve the code.
 
 ```bash
 export AFL_ROOT=/path/to/AFLplusplus          # built with IJON
 export LLVM_BIN=/path/to/llvm/bin             # clang, llvm-cov (for coverage builds)
 export TMPDIR=/path/with/space                # scratch for builds/corpora (optional)
 ```
+
+Prefer not to clone? With [`uv`](https://docs.astral.sh/uv/) you can fetch and run the
+CLI straight from git — no clone, no manual venv:
+
+```bash
+uvx --from git+https://github.com/tosanjay/ijon-llm ijon-reloaded bringup --lib /path/to/libxyz --name libxyz
+```
+
+(This installs the **agent** in one command; you still supply AFL++-with-IJON and the
+LLVM toolchain — see above — and, for Mode 2, a `DEEPSEEK_API_KEY`.)
 
 ## Run
 
@@ -181,6 +197,31 @@ tool); a `--manifest` flag lets a diversity variant share one workspace.
 ```bash
 .venv/bin/python scripts/run_target.py --workspace workspace/libcoap --iters 3   # Mode 2
 ```
+
+### Hunt crashes — the long adaptive campaign
+
+Part A *discovers* a good annotation in a short loop; to actually find **crashes** you
+run a long campaign with it — and re-annotate mid-flight when the fuzzer stalls deeper
+in. The mechanics are identical across modes; only *who plays the analyst* differs:
+
+- **Mode 2 — autonomous daemon.** One command fuzzes, and on each stall
+  re-localizes → annotates → (retires a mined-out annotation under map pressure) →
+  recompiles → resumes:
+  ```bash
+  .venv/bin/python scripts/campaign_supervisor.py --workspace workspace/libcoap \
+      --hours 8 --stall-min 20 --map-pressure 70
+  ```
+- **Mode 1 — Claude Code drives.** CC plays the analyst;
+  [`scripts/campaign_cli.py`](scripts/campaign_cli.py) owns **all** the mechanics,
+  *including the AFL process* — `start-round` launches a detached round (correct env,
+  fresh `-o`, auto reseed `-i`), `poll` reads `fuzzer_stats` and flags a stall
+  (observe-only — the live fuzzer is never interrupted to peek), `stop-round` SIGINTs it
+  cleanly — so CC never hand-rolls `afl-fuzz`. You just ask it to run an adaptive campaign.
+
+Both accumulate deduped crashes into `workspace/<t>/campaign/crashes/`, then
+[`scripts/triage_crashes.py`](scripts/triage_crashes.py) buckets them by
+`(crash-type, top frames)` into the **distinct bugs** (`campaign/triage_report.md`).
+See [`docs/getting_started.md`](docs/getting_started.md) Part D for the full walkthrough.
 
 Because the agent edits real C, a **two-role** design keeps it honest: the *analyst*
 chooses the annotation; a separate *repair* agent fixes compiler/placement errors

@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ijon-reloaded"
+version = "0.1.0"
+description = "LLM-guided IJON annotation for AFL++ — an agent that reshapes coverage feedback to get a stuck fuzzer past state-blind roadblocks"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "SanjayR" }]
+keywords = ["fuzzing", "afl", "ijon", "vulnerability", "llm", "security"]
+dependencies = [
+    "litellm",
+    "PyYAML",
+]
+
+[project.urls]
+Homepage = "https://github.com/tosanjay/ijon-llm"
+
+# One umbrella command with subcommands: `ijon-reloaded <cmd> ...`
+# (e.g. `uvx ijon-reloaded bringup --src ./libxyz`, `ijon-reloaded run --workspace ...`).
+[project.scripts]
+ijon-reloaded = "ijon_reloaded.cli:main"
+
+[tool.setuptools]
+# Flat layout: the deterministic harness + the runnable CLIs are both shipped.
+packages = ["harness", "ijon_reloaded"]
+
+[tool.setuptools.package-data]
+"*" = []

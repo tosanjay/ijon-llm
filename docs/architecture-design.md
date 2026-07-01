@@ -86,6 +86,15 @@ and the model's contribution auditable.
 Scripts: `reproduce_m1.py` (deterministic A/B), `solve_target_llm.py` (one
 autonomous turn on any target), `autonomous.py` (the full iterative loop).
 
+The **long-campaign layer** reuses that same core to hunt crashes over hours,
+re-annotating on each stall: `campaign_supervisor.py` (Mode 2, an autonomous
+daemon) and `campaign_cli.py` (Mode 1, a thin CLI Claude Code drives — it owns
+*all* the mechanics, including launching/polling/stopping the detached `afl-fuzz`
+process, so CC never hand-rolls the fuzzer). `triage_crashes.py` then buckets a
+campaign's raw crash inputs by `(crash-type, top frames)` into the distinct bugs.
+The two adaptive modes share one mechanical core; only *who plays the analyst*
+differs — the API daemon or Claude Code.
+
 ## 5. The autonomous loop (`AnalystLoop`)
 
 ```

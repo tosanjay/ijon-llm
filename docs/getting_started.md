@@ -44,13 +44,14 @@ locally, so you still need these — Mode 1 only removes the DeepSeek key:
 
 **2. Get this repo and launch Claude Code inside it.** ([Claude Code](https://claude.com/claude-code)
 must be installed.) The skill lives in `.claude/skills/ijon-reloaded/` and registers
-automatically when CC starts in the repo. The venv still needs LiteLLM installed —
-`analyst_cli.py` imports it even in Mode 1 (it just never calls the API). Export the
+automatically when CC starts in the repo. The venv needs the package installed
+(`pip install -e .` pulls in LiteLLM — `analyst_cli` imports it even in Mode 1, it just
+never calls the API — and wires up the `scripts/*.py` entry points). Export the
 env **before** launching `claude` so CC's shell inherits it:
 
 ```bash
 git clone <ijon-llm-url> && cd ijon-llm
-python3 -m venv .venv && .venv/bin/pip install litellm
+python3 -m venv .venv && .venv/bin/pip install -e .
 export AFL_ROOT=/path/to/AFLplusplus            # built with IJON
 export LLVM_BIN=/path/to/llvm/bin
 export TMPDIR=/your/space                        # not /tmp — see C1

@@ -25,6 +25,11 @@ the three committed example workspaces are the orientation.** Do NOT go hunting 
    mode, diversity) are the other two.
 3. Everything else (the cloned lib under `build/`, AFL output, coverage data) is
    gitignored and gets created by the loop — its absence on a fresh clone is normal.
+4. One-time env check: the `.venv` must have the package installed
+   (`.venv/bin/pip install -e .`) — that pulls in LiteLLM **and** makes the
+   `scripts/*.py` entry points resolve (they now shim into the `ijon_reloaded`
+   package). If a `scripts/…` call fails with `ModuleNotFoundError: ijon_reloaded`,
+   that install step is missing — run it, don't go spelunking.
 
 This skill is **Mode 1**: *you* (Claude Code) are the agent — the build-doctor AND
 the annotation analyst — using your own tools (Bash/Read/Write/Edit/WebFetch) and
